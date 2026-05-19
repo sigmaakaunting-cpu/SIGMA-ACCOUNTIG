@@ -41,7 +41,8 @@ if not st.session_state["logged_in"]:
     login()
     st.stop()
 
-logo = Image.open("assets/sigma_logo.png")
+logo = Image.open("sigma_logo.png")
+
 
 st.image(logo,width=420)
 st.markdown("""
@@ -73,7 +74,7 @@ st.title("📊 SIGMA Accounting Intelligence")
 st.caption("Автоматизирана финансиска анализа од заклучен лист")
 
 zaklucen_file = st.file_uploader("📤 Прикачи заклучен лист", type=["xls", "xlsx"])
-pravila_file = "data/pravila bilansi.xlsx"
+pravila_file = "pravila bilansi.xlsx"
 
 
 def clean_number(x):
