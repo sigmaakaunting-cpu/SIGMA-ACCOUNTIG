@@ -47,7 +47,10 @@ if not st.session_state["logged_in"]:
     login()
     st.stop()
 
-logo = Image.open("assets/sigma_logo.png")
+if os.path.exists("assets/sigma_logo.png"):
+    logo = Image.open("assets/sigma_logo.png")
+else:
+    logo = Image.open("sigma_logo.png")
 
 
 st.image(logo,width=420)
