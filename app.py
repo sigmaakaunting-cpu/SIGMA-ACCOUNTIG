@@ -20,11 +20,11 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 pdfmetrics.registerFont(
-    TTFont("PDF_Font", "fonts/arial.ttf")
+    TTFont("PDF_Font", "arial.ttf")
 )
 
 pdfmetrics.registerFont(
-    TTFont("PDF_Font_Bold", "fonts/arialbd.ttf")
+    TTFont("PDF_Font_Bold", "arialbd.ttf")
 )
 
 
