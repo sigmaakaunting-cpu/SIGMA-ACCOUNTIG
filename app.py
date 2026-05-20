@@ -88,7 +88,11 @@ zaklucen_file = st.file_uploader(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-pravila_file = os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")
+
+if os.path.exists(os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")):
+    pravila_file = os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")
+else:
+    pravila_file = os.path.join(BASE_DIR, "pravila bilansi.xlsx")
 
 
 def clean_number(x):
