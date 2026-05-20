@@ -473,19 +473,17 @@ def style_cashflow_rows(row):
 
 def export_single_pdf(df, title, file_title):
     output = BytesIO()
-    pdfmetrics.registerFont(TTFont("Arial", "C:/Windows/Fonts/arial.ttf"))
-    pdfmetrics.registerFont(TTFont("Arial-Bold", "C:/Windows/Fonts/arialbd.ttf"))
     doc = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
-    styles["Title"].fontName = "Arial-Bold"
+    styles["Title"].fontName = "Helvetica-Bold"
     elements = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
     data = [list(df.columns)] + df.astype(str).values.tolist()
     table = Table(data, repeatRows=1)
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("FONTNAME", (0, 0), (-1, 0), "Arial-Bold"),
-        ("FONTNAME", (0, 1), (-1, -1), "Arial"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 7),
         ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -498,11 +496,9 @@ def export_single_pdf(df, title, file_title):
 
 def export_cash_flow_pdf(df):
     output = BytesIO()
-    pdfmetrics.registerFont(TTFont("Arial", "C:/Windows/Fonts/arial.ttf"))
-    pdfmetrics.registerFont(TTFont("Arial-Bold", "C:/Windows/Fonts/arialbd.ttf"))
     doc = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
-    styles["Title"].fontName = "Arial-Bold"
+    styles["Title"].fontName = "Helvetica-Bold"
     elements = [Paragraph("Извештај за паричните текови", styles["Title"]), Spacer(1, 14)]
     data = [list(df.columns)] + df.astype(str).values.tolist()
     table = Table(data, repeatRows=1, colWidths=[50, 420, 120])
@@ -511,8 +507,8 @@ def export_cash_flow_pdf(df):
         ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0B1F4D")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Arial-Bold"),
-        ("FONTNAME", (0, 1), (-1, -1), "Arial"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("FONTSIZE", (0, 1), (-1, -1), 8),
         ("ALIGN", (2, 1), (2, -1), "RIGHT"),
@@ -523,12 +519,12 @@ def export_cash_flow_pdf(df):
         aop = str(row.AOP)
         if aop in total_rows:
             style.add("BACKGROUND", (0, i), (-1, i), colors.HexColor("#D9EAD3"))
-            style.add("FONTNAME", (0, i), (-1, i), "Arial-Bold")
+            style.add("FONTNAME", (0, i), (-1, i), "Helvetica-Bold")
             style.add("FONTSIZE", (0, i), (-1, i), 10)
         if aop == "CF17":
             style.add("BACKGROUND", (0, i), (-1, i), colors.HexColor("#2F65D9"))
             style.add("TEXTCOLOR", (0, i), (-1, i), colors.white)
-            style.add("FONTNAME", (0, i), (-1, i), "Arial-Bold")
+            style.add("FONTNAME", (0, i), (-1, i), "Helvetica-Bold")
             style.add("FONTSIZE", (0, i), (-1, i), 11)
     table.setStyle(style)
     elements.append(table)
