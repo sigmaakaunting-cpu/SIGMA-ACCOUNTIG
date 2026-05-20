@@ -19,23 +19,14 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-if os.path.exists("C:/Windows/Fonts/arial.ttf"):
-    pdfmetrics.registerFont(
-        TTFont("PDF_Font", "C:/Windows/Fonts/arial.ttf")
-    )
+pdfmetrics.registerFont(
+    TTFont("PDF_Font", "fonts/arial.ttf")
+)
 
-    pdfmetrics.registerFont(
-        TTFont("PDF_Font_Bold", "C:/Windows/Fonts/arialbd.ttf")
-    )
+pdfmetrics.registerFont(
+    TTFont("PDF_Font_Bold", "fonts/arialbd.ttf")
+)
 
-else:
-    pdfmetrics.registerFont(
-        TTFont("PDF_Font", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-    )
-
-    pdfmetrics.registerFont(
-        TTFont("PDF_Font_Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-    )
 
 
 
