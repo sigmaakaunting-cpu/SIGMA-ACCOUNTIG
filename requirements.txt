@@ -4,3 +4,4 @@ openpyxl
 xlsxwriter
 reportlab
 pdfplumber
+xlrd>=2.0.1
