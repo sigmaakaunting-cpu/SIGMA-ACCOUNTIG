@@ -4,6 +4,12 @@ import re
 import ast
 from io import BytesIO
 from PIL import Image
+import pdfplumber
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+pravila_file_path = os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")
 
 
 from reportlab.lib.pagesizes import A4, landscape
@@ -41,16 +47,16 @@ if not st.session_state["logged_in"]:
     login()
     st.stop()
 
-logo = Image.open("sigma_logo.png")
+logo = Image.open("assets/sigma_logo.png")
 
 
 st.image(logo,width=420)
 st.markdown("""
-            ### Добредојдовте во SIGMA Accounting Intelligence!
+            ### Добредојдовте во SIGMA Accounting!
             Контактирајте не за повеќе информации и прилагодени решенија за вашата компанија:
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 070/229-057   
-            - Адреса: ул. 121 3-1 Тетово
+            - 🏠Адреса: ул. 121 3-1 Тетово
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
@@ -70,11 +76,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 SIGMA Accounting Intelligence")
+st.title("📊 SIGMA Accounting ")
 st.caption("Автоматизирана финансиска анализа од заклучен лист")
 
-zaklucen_file = st.file_uploader("📤 Прикачи заклучен лист", type=["xls", "xlsx"])
-pravila_file = "pravila bilansi.xlsx"
+zaklucen_file = st.file_uploader(
+    "📤 Прикачи заклучен лист",
+    type=["xls", "xlsx", "pdf"]
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pravila_file = os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")
 
 
 def clean_number(x):
@@ -105,6 +116,67 @@ def normalize_key(x):
     if pd.isna(x):
         return ""
     return str(x).strip().replace(" ", "").replace(".0", "").upper()
+
+def pdf_number(x):
+    try:
+        return float(str(x).replace(",", ""))
+    except:
+        return 0.0
+
+
+def read_zaklucen_pdf(file):
+    st.success("PDF uspešno učitan. Počnuvam so ekstrakcija na podatoci...")
+
+    rows = []
+
+    with pdfplumber.open(file) as pdf:
+
+        for page in pdf.pages:
+
+            text = page.extract_text()
+
+            if not text:
+                continue
+
+            for line in text.split("\n"):
+
+                line = line.strip()
+
+                nums = re.findall(
+                    r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}",
+                    line
+                )
+
+                if len(nums) >= 8:
+
+                    first_num = re.search(
+                        r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}",
+                        line
+                    )
+
+                    left_part = line[:first_num.start()].strip()
+
+                    match = re.match(r"^(\d{3,6})\s*(.*)$", left_part)
+
+                    if match:
+
+                        konto = match.group(1)
+                        naziv = match.group(2).strip()
+
+                        rows.append({
+                            "konto": konto,
+                            "naziv": naziv,
+                            "prethodna_dolzi": pdf_number(nums[0]),
+                            "prethodna_pobaruva": pdf_number(nums[1]),
+                            "tekovna_dolzi": pdf_number(nums[2]),
+                            "tekovna_pobaruva": pdf_number(nums[3]),
+                            "vkupno_dolzi": pdf_number(nums[4]),
+                            "vkupno_pobaruva": pdf_number(nums[5]),
+                            "krajno_dolzi": pdf_number(nums[6]),
+                            "krajno_pobaruva": pdf_number(nums[7])
+                        })
+
+    return pd.DataFrame(rows)
 
 
 def read_zaklucen(file):
@@ -233,6 +305,7 @@ def konto_list(konto_text):
                 for n in range(int(a), int(b) + 1):
                     result.append(str(n).zfill(width))
             except Exception:
+                st.error(e)
                 pass
         else:
             result.append(part)
@@ -535,7 +608,15 @@ def export_cash_flow_pdf(df):
 
 if zaklucen_file :
     try:
-        df = read_zaklucen(zaklucen_file)
+        if zaklucen_file.name.lower().endswith(".pdf"):
+            df = read_zaklucen_pdf(zaklucen_file)
+            
+            #st.write("PDF DATAFRAME:")
+            #st.write(df.head())
+            #st.write(df.shape)
+
+        else:
+            df = read_zaklucen(zaklucen_file)
         st.subheader("📑 Zaklucen list")
         sum_row = {"konto": "", "naziv": "VKUPNO"}
         for col in df.columns:
@@ -674,6 +755,15 @@ if zaklucen_file :
         st.download_button("📄 Export PDF - Bilans na sostojba", data=pdf_bs, file_name="bilans_na_sostojba.pdf", mime="application/pdf", key="pdf_bs_btn")
         if cf is not None:
             pdf_cf = export_cash_flow_pdf(cf)
-            st.download_button("📄 Export PDF - Cash Flow", data=pdf_cf, file_name="cash_flow.pdf", mime="application/pdf", key="pdf_cf_btn")
+
+        st.download_button(
+               "📄 Export PDF - Cash Flow",
+              data=pdf_cf,
+              file_name="cash_flow.pdf",
+              mime="application/pdf",
+              key="pdf_cf_btn"
+    )
     except Exception as e:
-        st.error(f"Greska: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        
