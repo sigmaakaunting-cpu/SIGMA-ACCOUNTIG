@@ -25,6 +25,52 @@ USERS = {
     "client1": "test123"
 }
 
+st.markdown("""
+<style>
+
+/* TAB BAR */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 12px;
+    background-color: #f5f7fb;
+    padding: 10px;
+    border-radius: 14px;
+}
+
+/* TAB */
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    background-color: white;
+    border-radius: 12px;
+    padding: 10px 22px;
+    color: #1f2937;
+    font-weight: 600;
+    border: 1px solid #e5e7eb;
+    transition: all 0.25s ease;
+}
+
+/* HOVER */
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: #eef2ff;
+    color: #2563eb;
+    transform: translateY(-2px);
+}
+
+/* ACTIVE TAB */
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(90deg, #2563eb, #1d4ed8);
+    color: white !important;
+    box-shadow: 0 4px 12px rgba(37,99,235,0.35);
+}
+
+/* REMOVE RED LINE */
+.stTabs [data-baseweb="tab-highlight"] {
+    display: none;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
 def login():
     st.sidebar.title("🔐 Login")
 
@@ -667,7 +713,7 @@ if zaklucen_file :
         pasiva_prev = bs.loc[bs["AOP"] == "111", "Prethodna godina"].sum()
         razlika_prev = aktiva_prev - pasiva_prev
 
-        st.subheader("✅ Kontrolni proverki")
+        st.subheader("✅ Kontrolni proverki na Bilans na sostojba")
         if razlika == 0:
             st.success(f"Tekovna godina: Aktiva = Pasiva ✅ ({aktiva:,.0f})")
         else:
