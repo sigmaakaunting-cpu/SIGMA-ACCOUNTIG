@@ -115,8 +115,9 @@ st.markdown("""
             ### Добредојдовте во SIGMA Accounting!
             Контактирајте не за повеќе информации и прилагодени решенија за вашата компанија:
             - 📧 Email:sigmaakaunting@gmail.com
-            - 📞 Телефон: 070/229-057   
-            - 🏠Адреса: ул. 121 3-1 Тетово
+            - 📞 Телефон: 078/229-057   
+            - 🏠 Адреса: ул. 121 3-1 Тетово
+            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
@@ -451,6 +452,62 @@ def calculate_bilans_uspeh(df, rules_file):
     return pd.DataFrame([{"AOP": aop, "Pozicija": positions.get(aop, ""), "Iznos": values.get(aop, 0.0)} for aop in order])
 
 
+def calculate_seopfatna_dobivka(bu, rules_file):
+
+    rules = pd.read_excel(
+        rules_file,
+        sheet_name="Pravila Seopfatna Dobivka",
+        header=1
+    )
+
+    rules.columns = [str(c).strip() for c in rules.columns]
+    rules = rules[rules["Red"].notna()].copy()
+
+    data_map = {}
+
+    for _, row in bu.iterrows():
+        aop = str(row["AOP"]).strip().replace(".0", "").zfill(3)
+        data_map[f"BU{aop}"] = float(row["Iznos"])
+
+    results = {}
+
+    rows = []
+
+    for _, row in rules.iterrows():
+
+        red = str(row["Red"]).strip()
+        naziv = str(row["Naziv"]).strip()
+        formula = str(row["Formula"]).strip().replace(" ", "")
+        tip = str(row.get("Tip", "iznos")).strip()
+        stil = str(row.get("Stil", "normal")).strip()
+
+        expression = formula
+
+        all_values = {}
+        all_values.update(data_map)
+        all_values.update(results)
+
+        for key in sorted(all_values.keys(), key=len, reverse=True):
+            expression = expression.replace(key, str(all_values[key]))
+
+        try:
+            value = float(safe_eval_expression(expression))
+        except:
+            value = 0.0
+
+        results[red] = value
+
+        rows.append({
+            "Red": red,
+            "Naziv": naziv,
+            "Tekovna godina": value,
+            "Tip": tip,
+            "Stil": stil
+        })
+
+    return pd.DataFrame(rows)
+
+
 def calculate_bilans_sostojba(df, rules_file):
     rules = read_rules(rules_file, "Pravila bilans Sostojba")
     current_values, previous_values, positions, order = {}, {}, {}, []
@@ -617,14 +674,34 @@ def export_single_pdf(df, title, file_title):
     data = [list(df.columns)] + df.astype(str).values.tolist()
     table = Table(data, repeatRows=1)
     table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("FONTNAME", (0, 0), (-1, 0), "PDF_Font_Bold"),
-        ("FONTNAME", (0, 1), (-1, -1), "PDF_Font"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
+
+    # HEADER
+    ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f2937")),
+    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+    ('FONTNAME', (0,0), (-1,0), 'PDF_Font_Bold'),
+    ('FONTSIZE', (0,0), (-1,0), 12),
+    ('BOTTOMPADDING', (0,0), (-1,0), 10),
+
+    # BODY
+    ('FONTNAME', (0,1), (-1,-1), 'PDF_Font'),
+    ('FONTSIZE', (0,1), (-1,-1), 10),
+
+    # ALIGNMENTS
+    ('ALIGN', (2,1), (-1,-1), 'RIGHT'),
+    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+
+    # GRID
+    ('GRID', (0,0), (-1,-1), 0.7, colors.HexColor("#9ca3af")),
+    ('BOX', (0,0), (-1,-1), 1.2, colors.black),
+
+    # ROW BACKGROUND
+    ('BACKGROUND', (0,1), (-1,-1), colors.white),
+
+    # PADDING
+    ('TOPPADDING', (0,0), (-1,-1), 6),
+    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+
+]))
     elements.append(table)
     doc.build(elements)
     output.seek(0)
@@ -700,6 +777,8 @@ if zaklucen_file :
 
         bu = calculate_bilans_uspeh(df, pravila_file)
         bs = calculate_bilans_sostojba(df, pravila_file)
+        sd = calculate_seopfatna_dobivka(bu, pravila_file)
+
         try:
             cf = calculate_cash_flow(df, pravila_file, bu, bs)
         except Exception as cash_error:
@@ -734,7 +813,7 @@ if zaklucen_file :
         else:
             st.error(f"Prethodna godina: Razlika ❌ {razlika_prev:,.0f}")
 
-        tab1, tab2, tab3, tab4 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard", "Seopfatna dobivka"])
         with tab1:
             st.subheader("Bilans na uspeh po AOP")
             st.dataframe(bu.style.apply(style_formula_rows, axis=1), use_container_width=True)
@@ -748,6 +827,7 @@ if zaklucen_file :
             else:
                 st.warning("Cash Flow ne e vcitan.")
         with tab4:
+            
 
             st.subheader("KPI Dashboard")
 
@@ -804,6 +884,37 @@ if zaklucen_file :
             else:
 
                 st.warning("KPI ne e vcitan.")
+
+        with tab5:
+
+            st.subheader("📊 Извештај за сеопфатна добивка")
+
+            display_sd = sd[["Red", "Naziv", "Tekovna godina"]]
+
+            def highlight_totals(row):
+
+                 if str(sd.loc[row.name, "Stil"]).lower() == "total":
+
+                     return [
+                         "font-weight: bold; font-size: 18px;"
+                         for _ in row
+        ]
+
+                 return ["" for _ in row]
+
+            styled_sd = (
+                 display_sd.style
+                 .format({
+                     "Tekovna godina": "{:,.2f}"
+            })
+                 .apply(highlight_totals, axis=1)
+)
+
+            st.dataframe(
+                     styled_sd,
+                     use_container_width=True,
+                     height=700
+)
                 
         export_sheets = {"Zaklucen list": df_total, "Bilans uspeh AOP": bu, "Bilans sostojba AOP": bs}
         if cf is not None:
@@ -814,20 +925,48 @@ if zaklucen_file :
         st.download_button("📥 Export Excel", data=excel_data, file_name="aop_finansiski_izvestai.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="export_excel_btn")
 
         pdf_bu = export_single_pdf(bu, "Bilans na uspeh", "bilans_na_uspeh")
-        st.download_button("📄 Export PDF - Bilans na uspeh", data=pdf_bu, file_name="bilans_na_uspeh.pdf", mime="application/pdf", key="pdf_bu_btn")
+        st.download_button(
+    "📄 Export PDF - Bilans na uspeh",
+    data=pdf_bu,
+    file_name="bilans_na_uspeh.pdf",
+    mime="application/pdf",
+    key="pdf_bu_btn"
+)
+
         pdf_bs = export_single_pdf(bs, "Bilans na sostojba", "bilans_na_sostojba")
-        st.download_button("📄 Export PDF - Bilans na sostojba", data=pdf_bs, file_name="bilans_na_sostojba.pdf", mime="application/pdf", key="pdf_bs_btn")
-        if cf is not None:
-            pdf_cf = export_cash_flow_pdf(cf)
+        st.download_button(
+             "📄 Export PDF - Bilans na sostojba",
+             data=pdf_bs,
+             file_name="bilans_na_sostojba.pdf",
+             mime="application/pdf",
+             key="pdf_bs_btn"
+)
+
+        pdf_sd = export_single_pdf(
+             sd[["Red", "Naziv", "Tekovna godina"]],
+             "Seopfatna dobivka",
+             "seopfatna_dobivka"
+)
 
         st.download_button(
-               "📄 Export PDF - Cash Flow",
-              data=pdf_cf,
-              file_name="cash_flow.pdf",
+             "📄 Export PDF - Seopfatna dobivka",
+             data=pdf_sd,
+              file_name="seopfatna_dobivka.pdf",
               mime="application/pdf",
+              key="pdf_sd_btn"
+)
+
+        if cf is not None:
+             pdf_cf = export_cash_flow_pdf(cf)
+
+             st.download_button(
+             "📄 Export PDF - Cash Flow",
+             data=pdf_cf,
+             file_name="cash_flow.pdf",
+             mime="application/pdf",
               key="pdf_cf_btn"
     )
+
     except Exception as e:
-        import traceback
-        st.code(traceback.format_exc())
-        
+             import traceback
+             st.code(traceback.format_exc())   
