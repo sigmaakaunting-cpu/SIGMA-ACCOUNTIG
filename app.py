@@ -27,7 +27,25 @@ pdfmetrics.registerFont(
     TTFont("PDF_Font_Bold", "arialbd.ttf")
 )
 
+def calculate_formula(formula, values_dict):
 
+    if pd.isna(formula):
+        return 0
+
+    formula = str(formula)
+
+    parts = formula.split("+")
+
+    total = 0
+
+    for part in parts:
+
+        part = part.strip()
+
+        if part in values_dict:
+            total += values_dict[part]
+
+    return total
 
 
 st.set_page_config(page_title="AOP Finansiski Izvestai", layout="wide")
@@ -778,12 +796,70 @@ if zaklucen_file :
         bu = calculate_bilans_uspeh(df, pravila_file)
         bs = calculate_bilans_sostojba(df, pravila_file)
         sd = calculate_seopfatna_dobivka(bu, pravila_file)
+        pravila_val = pd.read_excel(
+        pravila_file,
+    sheet_name="Pravila Valuation"
+)
+
+# ги чисти празните места од имињата на колоните
+        pravila_val.columns = pravila_val.columns.str.strip()
+
+        valuation_rules = {}
+
+        for _, row in pravila_val.iterrows():
+            valuation_rules[str(row["Pozicija"]).strip()] = row["AOP"]
+
+        #st.write("Valuation rules:", valuation_rules)
+
+        # ===== VALUES DICT =====
+        values_dict = {}
+
+        # BS values
+        for _, row in bs.iterrows():
+            aop = str(row["AOP"]).strip()
+            values_dict[aop + "_T"] = row["Tekovna godina"]
+
+        # SD values
+        for _, row in sd.iterrows():
+            red = str(row["Red"]).strip()
+
+            values_dict[red] = row["Tekovna godina"]
+
+            # dodatna sigurnost ako nekade e samo broj
+            if red.isdigit():
+                values_dict["SD" + red] = row["Tekovna godina"]
+
+        #st.write("VALUES DICT KEYS:", list(values_dict.keys()))
+        #st.write("SD14 value:", values_dict.get("SD14"))
+        #st.write("SD8 value:", values_dict.get("SD8"))
+
+        # ===== VALUATION TEST =====
+        ebitda = calculate_formula(
+            valuation_rules["EBITDA"],
+            values_dict
+        )
+
+        debt = calculate_formula(
+            valuation_rules["Debt"],
+            values_dict
+        )
+
+        cash = calculate_formula(
+            valuation_rules["Cash"],
+            values_dict
+        )
+
+        #st.write("EBITDA:", ebitda)
+        #st.write("Debt:", debt)
+        #st.write("Cash:", cash)
 
         try:
             cf = calculate_cash_flow(df, pravila_file, bu, bs)
         except Exception as cash_error:
             cf = None
             st.warning(f"Cash Flow ne e vcitan: {cash_error}")
+
+
         try:
             kpi = calculate_kpi(pravila_file, bu, bs)
         except Exception as kpi_error:
@@ -813,7 +889,7 @@ if zaklucen_file :
         else:
             st.error(f"Prethodna godina: Razlika ❌ {razlika_prev:,.0f}")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard", "Seopfatna dobivka"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard", "Seopfatna dobivka", "Valuation Dashboard "])
         with tab1:
             st.subheader("Bilans na uspeh po AOP")
             st.dataframe(bu.style.apply(style_formula_rows, axis=1), use_container_width=True)
@@ -899,6 +975,9 @@ if zaklucen_file :
                          "font-weight: bold; font-size: 18px;"
                          for _ in row
         ]
+                 
+         
+
 
                  return ["" for _ in row]
 
@@ -915,7 +994,66 @@ if zaklucen_file :
                      use_container_width=True,
                      height=700
 )
-                
+
+        with tab6:
+
+            st.subheader("📈 Проценка на вредност / Valuation Dashboard")
+
+            multiple = st.number_input(
+                "EBITDA Multiple",
+                min_value=1.0,
+                max_value=10.0,
+                value=4.0,
+                step=0.5
+            )
+
+            enterprise_value = ebitda * multiple
+            equity_value = enterprise_value + cash - debt
+            conservative_value = ebitda * 3
+            fair_value = ebitda * 4
+            optimistic_value = ebitda * 5
+
+            conservative_equity = conservative_value + cash - debt
+            fair_equity = fair_value + cash - debt
+            optimistic_equity = optimistic_value + cash - debt
+
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric("EBITDA / ЕБИТДА", f"{ebitda:,.0f}")
+            col2.metric("Enterprise Value / ВРЕДНОСТ НА КОМПАНИЈАТА", f"{enterprise_value:,.0f}")
+            col3.metric("Equity Value / ВРЕДНОСТ НА КАПИТАЛОТ", f"{equity_value:,.0f}")
+
+            col4, col5 = st.columns(2)
+
+            col4.metric("Cash / Парични средства", f"{cash:,.0f}")
+            col5.metric("Debt / Финансиски долг", f"{debt:,.0f}")
+            conservative_value = ebitda * 3
+            fair_value = ebitda * 4
+            optimistic_value = ebitda * 5
+
+            conservative_equity = conservative_value + cash - debt
+            fair_equity = fair_value + cash - debt
+            optimistic_equity = optimistic_value + cash - debt
+
+            st.subheader("📊 Valuation Range / Опсег на проценка")
+
+            c1, c2, c3 = st.columns(3)
+
+            c1.metric(
+                "Conservative / Конзервативна (3x)",
+                f"{conservative_equity:,.0f}"
+            )
+
+            c2.metric(
+                "Fair Value / Реална вредност (4x)",
+                f"{fair_equity:,.0f}"
+            )
+
+            c3.metric(
+                "Optimistic / Оптимистичка вредност(5x)",
+                f"{optimistic_equity:,.0f}"
+            )
+
         export_sheets = {"Zaklucen list": df_total, "Bilans uspeh AOP": bu, "Bilans sostojba AOP": bs}
         if cf is not None:
             export_sheets["Cash Flow"] = cf
