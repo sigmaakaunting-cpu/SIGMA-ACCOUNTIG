@@ -594,9 +594,11 @@ def calculate_cash_flow(df, rules_file, bu, bs):
     return pd.DataFrame([{"AOP": aop, "Pozicija": positions.get(aop, ""), "Iznos": values.get(aop, 0.0)} for aop in order])
 
 
-def calculate_kpi(rules_file, bu, bs):
+def calculate_kpi(rules_file, bu, bs, broj_vraboteni=0, meseci_rabotenje=0):
     rules = read_rules(rules_file, "Pravila KPI")
     data_map = build_data_map(bu, bs)
+    data_map["BROJ_VRABOTENI"] = broj_vraboteni
+    data_map["MESECI_RABOTENJE"] = meseci_rabotenje
 
     results = []
 
@@ -795,6 +797,8 @@ if zaklucen_file :
 
         bu = calculate_bilans_uspeh(df, pravila_file)
         bs = calculate_bilans_sostojba(df, pravila_file)
+
+      
         sd = calculate_seopfatna_dobivka(bu, pravila_file)
         pravila_val = pd.read_excel(
         pravila_file,
@@ -859,9 +863,30 @@ if zaklucen_file :
             cf = None
             st.warning(f"Cash Flow ne e vcitan: {cash_error}")
 
+        st.subheader("⚙️ KPI Дополнителни параметри")
+
+        broj_vraboteni = st.number_input(
+            "Број на вработени",
+            min_value=0,
+            value=0,
+            step=1,
+            key="broj_vraboteni_kpi"
+
+        )
+
+        meseci_rabotenje = st.number_input(
+            "Месеци на работење",
+            min_value=0,
+            max_value=12,
+            value=12,
+            step=1,
+            key="meseci_rabotenje_kpi"
+        ) 
+        bu.loc[bu["AOP"] == "257", "Iznos"] = broj_vraboteni
+        bu.loc[bu["AOP"] == "258", "Iznos"] = meseci_rabotenje
 
         try:
-            kpi = calculate_kpi(pravila_file, bu, bs)
+            kpi = calculate_kpi(pravila_file, bu, bs   )
         except Exception as kpi_error:
             kpi = None
             st.warning(f"KPI ne e vcitan: {kpi_error}")
@@ -1031,10 +1056,7 @@ if zaklucen_file :
             fair_value = ebitda * 4
             optimistic_value = ebitda * 5
 
-            conservative_equity = conservative_value + cash - debt
-            fair_equity = fair_value + cash - debt
-            optimistic_equity = optimistic_value + cash - debt
-
+            
             st.subheader("📊 Valuation Range / Опсег на проценка")
 
             c1, c2, c3 = st.columns(3)
