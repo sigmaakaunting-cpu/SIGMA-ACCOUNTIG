@@ -181,6 +181,69 @@ def clean_number(x):
         return 0.0
 
 
+def read_excel_fill_merged(file, engine="openpyxl", sheet_name=0):
+    """
+    Чита Excel и ги пополнува merged cells со вредноста од горната-лева ќелија.
+    Ова помага кај заклучни листи каде конто/назив или заглавија се споени.
+    """
+    if engine != "openpyxl":
+        file.seek(0)
+        return pd.read_excel(file, engine=engine, header=None).dropna(how="all")
+
+    try:
+        from openpyxl import load_workbook
+        file.seek(0)
+        wb = load_workbook(file, data_only=True)
+        ws = wb[wb.sheetnames[sheet_name] if isinstance(sheet_name, int) else sheet_name]
+
+        merged_ranges = list(ws.merged_cells.ranges)
+        for merged_range in merged_ranges:
+            min_col, min_row, max_col, max_row = merged_range.bounds
+            value = ws.cell(min_row, min_col).value
+            ws.unmerge_cells(str(merged_range))
+            for row in range(min_row, max_row + 1):
+                for col in range(min_col, max_col + 1):
+                    ws.cell(row, col).value = value
+
+        data = list(ws.values)
+        return pd.DataFrame(data).dropna(how="all")
+    except Exception:
+        file.seek(0)
+        return pd.read_excel(file, engine=engine, header=None).dropna(how="all")
+
+
+def validate_zaklucen_list(df):
+    """
+    Контрола дали заклучниот лист е затворен:
+    - претходна должи = претходна побарува
+    - тековна должи = тековна побарува
+    - вкупно должи = вкупно побарува
+    - крајно должи = крајно побарува
+    """
+    checks = []
+
+    pairs = [
+        ("Prethodna godina", "prethodna_dolzi", "prethodna_pobaruva"),
+        ("Tekovna godina", "tekovna_dolzi", "tekovna_pobaruva"),
+        ("Vkupno", "vkupno_dolzi", "vkupno_pobaruva"),
+        ("Krajno saldo", "krajno_dolzi", "krajno_pobaruva"),
+    ]
+
+    for label, debit_col, credit_col in pairs:
+        if debit_col in df.columns and credit_col in df.columns:
+            debit = float(df[debit_col].sum())
+            credit = float(df[credit_col].sum())
+            checks.append({
+                "Kontrola": label,
+                "Dolzi": round(debit, 2),
+                "Pobaruva": round(credit, 2),
+                "Razlika": round(debit - credit, 2),
+                "Status": "✅ OK" if round(debit - credit, 2) == 0 else "❌ Razlika"
+            })
+
+    return pd.DataFrame(checks)
+
+
 def format_aop(x):
     try:
         if pd.isna(x):
@@ -201,19 +264,134 @@ def normalize_key(x):
     return str(x).strip().replace(" ", "").replace(".0", "").upper()
 
 def pdf_number(x):
+    """Gi cita i US (92,250.00) i EU/MK (400.000,00) formati."""
     try:
-        return float(str(x).replace(",", ""))
+        s = str(x).strip().replace(" ", "")
+        if s == "" or s.lower() == "nan":
+            return 0.0
+
+        # Ako ima i tocka i zapirka, posledniot separator e decimalen separator.
+        if "." in s and "," in s:
+            if s.rfind(",") > s.rfind("."):
+                # 400.000,00 -> 400000.00
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                # 92,250.00 -> 92250.00
+                s = s.replace(",", "")
+        elif "," in s:
+            # 1234,56 -> 1234.56 ; 1,234 -> 1234 ako e thousands
+            if re.match(r"^-?\d{1,3}(,\d{3})+$", s):
+                s = s.replace(",", "")
+            else:
+                s = s.replace(",", ".")
+        return float(s)
     except:
         return 0.0
+
+
+def split_signed_saldo(value):
+    """Ako saldoto e vo edna kolona: plus = dolzi, minus = pobaruva."""
+    value = pdf_number(value)
+    if value >= 0:
+        return value, 0.0
+    return 0.0, abs(value)
+
+
+def extract_pdf_konto_naziv(left_part):
+    """Poddrzuva konta kako 002, 10009, 310 01, 742 GP1, 741 U1."""
+    left_part = str(left_part).strip()
+    match = re.match(r"^([0-9]{3,6}(?:\s+[A-Za-zА-Ша-ш0-9]{1,4})?)\s*(.*)$", left_part)
+    if not match:
+        return None, None
+    konto = match.group(1).replace(" ", "").strip()
+    naziv = match.group(2).strip()
+    return konto, naziv
+
+
+def _pdf_number_pattern():
+    # US: 92,250.00 / EU: 400.000,00 / plain: 1000.00 ili 1000,00
+    return r"-?(?:\d{1,3}(?:[\.,]\d{3})+[\.,]\d{2}|\d+[\.,]\d{2})"
+
+
+def read_zaklucen_pdf_words_format(pdf):
+    """
+    Format od drug softver: koloni so X-pozicii:
+    Pocetna D/P, Tekoven promet D/P, Vkupen promet D/P, Saldo D/P.
+    Ovoj parser gi cita i redovite kade sto praznite nuli ne se ispecateni.
+    """
+    rows = []
+    num_re = re.compile(_pdf_number_pattern())
+
+    # centri na 8-te brojceni koloni vo ovoj landscape PDF format
+    column_centers = [274, 342, 411, 480, 548, 617, 685, 754]
+    col_names = [
+        "prethodna_dolzi", "prethodna_pobaruva",
+        "tekovna_dolzi", "tekovna_pobaruva",
+        "vkupno_dolzi", "vkupno_pobaruva",
+        "krajno_dolzi", "krajno_pobaruva"
+    ]
+
+    for page in pdf.pages:
+        words = page.extract_words(x_tolerance=2, y_tolerance=3)
+        lines = {}
+        for w in words:
+            top = round(w.get("top", 0))
+            lines.setdefault(top, []).append(w)
+
+        for top in sorted(lines):
+            ws = sorted(lines[top], key=lambda w: w["x0"])
+            if not ws:
+                continue
+
+            first = ws[0]["text"].strip()
+            # gi zemame samo sintetski/analiticki konta, ne grupni zbirni redovi 0,1,2... i Vкупно
+            if not re.match(r"^\d{3,6}$", first):
+                continue
+
+            konto = first
+            text_words = []
+            values = {c: 0.0 for c in col_names}
+
+            for w in ws[1:]:
+                txt = w["text"].strip()
+                if num_re.fullmatch(txt):
+                    center = (w["x0"] + w["x1"]) / 2
+                    idx = min(range(len(column_centers)), key=lambda i: abs(center - column_centers[i]))
+                    values[col_names[idx]] += pdf_number(txt)
+                elif w["x0"] < 240:
+                    text_words.append(txt)
+
+            # mora da ima barem edna brojka vo redot
+            if sum(abs(v) for v in values.values()) == 0:
+                continue
+
+            rows.append({
+                "konto": konto,
+                "naziv": " ".join(text_words).strip(),
+                **values
+            })
+
+    return pd.DataFrame(rows)
 
 
 def read_zaklucen_pdf(file):
     st.success("PDF uspešno učitan. Počnuvam so ekstrakcija na podatoci...")
 
     rows = []
+    number_pattern = _pdf_number_pattern()
 
     with pdfplumber.open(file) as pdf:
 
+        # 1) Prvo specijalen parser za PDF so koloni po X-pozicija
+        #    Potreben e za formati kade sto praznite nuli ne se pecatat.
+        text_all = "\n".join([p.extract_text() or "" for p in pdf.pages])
+        if "ZAKLU" in text_all.upper() and "SALDO" in text_all.upper() and "TEKOV" in text_all.upper():
+            df_words = read_zaklucen_pdf_words_format(pdf)
+            if not df_words.empty and len(df_words) > 5:
+                st.info("Detektiran PDF format: zaklucen list so prazni koloni bez nuli / drug softver.")
+                return df_words
+
+        # 2) Standardni PDF varijanti po tekst-linija
         for page in pdf.pages:
 
             text = page.extract_text()
@@ -225,46 +403,64 @@ def read_zaklucen_pdf(file):
 
                 line = line.strip()
 
-                nums = re.findall(
-                    r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}",
-                    line
-                )
+                nums = re.findall(number_pattern, line)
 
-                if len(nums) >= 8:
+                # Standarden PDF: pocetna D/P + tekovna D/P + vkupno D/P + krajno D/P = 8 brojki
+                # Obicen PDF: pocetna saldo + tekovna D/P + vkupno D/P + krajno saldo = 6 brojki
+                if len(nums) >= 8 or len(nums) == 6:
 
-                    first_num = re.search(
-                        r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}",
-                        line
-                    )
+                    first_num = re.search(number_pattern, line)
+                    if not first_num:
+                        continue
 
                     left_part = line[:first_num.start()].strip()
+                    konto, naziv = extract_pdf_konto_naziv(left_part)
 
-                    match = re.match(r"^(\d{3,6})\s*(.*)$", left_part)
+                    if not konto:
+                        continue
 
-                    if match:
+                    if len(nums) >= 8:
+                        prethodna_dolzi = pdf_number(nums[0])
+                        prethodna_pobaruva = pdf_number(nums[1])
+                        tekovna_dolzi = pdf_number(nums[2])
+                        tekovna_pobaruva = pdf_number(nums[3])
+                        vkupno_dolzi = pdf_number(nums[4])
+                        vkupno_pobaruva = pdf_number(nums[5])
+                        krajno_dolzi = pdf_number(nums[6])
+                        krajno_pobaruva = pdf_number(nums[7])
+                    else:
+                        # Format so pocetno i krajno saldo vo edna kolona
+                        prethodna_dolzi, prethodna_pobaruva = split_signed_saldo(nums[0])
+                        tekovna_dolzi = pdf_number(nums[1])
+                        tekovna_pobaruva = pdf_number(nums[2])
+                        vkupno_dolzi = pdf_number(nums[3])
+                        vkupno_pobaruva = pdf_number(nums[4])
+                        krajno_dolzi, krajno_pobaruva = split_signed_saldo(nums[5])
 
-                        konto = match.group(1)
-                        naziv = match.group(2).strip()
+                    rows.append({
+                        "konto": konto,
+                        "naziv": naziv,
+                        "prethodna_dolzi": prethodna_dolzi,
+                        "prethodna_pobaruva": prethodna_pobaruva,
+                        "tekovna_dolzi": tekovna_dolzi,
+                        "tekovna_pobaruva": tekovna_pobaruva,
+                        "vkupno_dolzi": vkupno_dolzi,
+                        "vkupno_pobaruva": vkupno_pobaruva,
+                        "krajno_dolzi": krajno_dolzi,
+                        "krajno_pobaruva": krajno_pobaruva
+                    })
 
-                        rows.append({
-                            "konto": konto,
-                            "naziv": naziv,
-                            "prethodna_dolzi": pdf_number(nums[0]),
-                            "prethodna_pobaruva": pdf_number(nums[1]),
-                            "tekovna_dolzi": pdf_number(nums[2]),
-                            "tekovna_pobaruva": pdf_number(nums[3]),
-                            "vkupno_dolzi": pdf_number(nums[4]),
-                            "vkupno_pobaruva": pdf_number(nums[5]),
-                            "krajno_dolzi": pdf_number(nums[6]),
-                            "krajno_pobaruva": pdf_number(nums[7])
-                        })
+    df = pd.DataFrame(rows)
 
-    return pd.DataFrame(rows)
+    if df.empty:
+        st.error("PDF e procitan, no ne se pronajdeni redovi od bruto bilansot.")
+        st.stop()
 
+    return df
 
 def read_zaklucen(file):
     engine = "xlrd" if file.name.lower().endswith(".xls") else "openpyxl"
-    raw = pd.read_excel(file, engine=engine, header=None).dropna(how="all")
+    raw = read_excel_fill_merged(file, engine=engine, sheet_name=0)
 
     start_row = None
     for i in range(len(raw)):
@@ -425,7 +621,33 @@ def safe_eval_expression(expr):
     return eval(compile(tree, "<string>", "eval"))
 
 
-def apply_formulas_and_logic(rules, values):
+def replace_formula_tokens(formula, values, external_values=None):
+    """
+    Поддржува формули со:
+    - обични AOP: 063+111
+    - BU референци: BU246, BU247
+    - BS референци: BS063 или BS063_T / BS063_P / BS063_R
+    """
+    external_values = external_values or {}
+    all_values = {}
+    all_values.update({str(k).upper(): v for k, v in external_values.items()})
+    all_values.update({str(k).upper().zfill(3) if str(k).isdigit() else str(k).upper(): v for k, v in values.items()})
+
+    expression = str(formula).strip().replace("=", "").replace(" ", "").upper()
+
+    # Прво замени подолги клучеви како BS063_T, потоа BU246, потоа 063
+    for key in sorted(all_values.keys(), key=len, reverse=True):
+        expression = re.sub(rf"\b{re.escape(key)}\b", str(all_values.get(key, 0.0)), expression)
+
+    # ВАЖНО:
+    # Не ги заменуваме повторно сите 3-цифрени броеви после првата замена.
+    # Причина: кога формулата 225+226+227+228 ќе се претвори во 0.0+0.0+394.0+0.0,
+    # regex-от може погрешно да го препознае бројот 394 од 394.0 како AOP 394 и да го замени со 0.
+    # Затоа тука враќаме expression директно.
+    return expression
+
+
+def apply_formulas_and_logic(rules, values, external_values=None):
     values = values.copy()
     for _ in range(30):
         for _, row in rules.iterrows():
@@ -433,14 +655,9 @@ def apply_formulas_and_logic(rules, values):
             formula = row.get("Formula", "")
             if pd.isna(formula) or str(formula).strip() == "":
                 continue
-            formula = str(formula).strip().replace("=", "").replace(" ", "")
 
-            def repl(match):
-                ref = match.group(0).zfill(3)
-                return str(values.get(ref, 0.0))
-
-            expression = re.sub(r"\d{3}", repl, formula)
             try:
+                expression = replace_formula_tokens(formula, values, external_values)
                 values[aop] = float(safe_eval_expression(expression))
             except Exception:
                 values[aop] = 0.0
@@ -526,21 +743,146 @@ def calculate_seopfatna_dobivka(bu, rules_file):
     return pd.DataFrame(rows)
 
 
-def calculate_bilans_sostojba(df, rules_file):
+def calculate_bilans_sostojba(df, rules_file, bu=None):
     rules = read_rules(rules_file, "Pravila bilans Sostojba")
     current_values, previous_values, positions, order = {}, {}, {}, []
+
+    bu_current_map = {}
+    if bu is not None:
+        for _, bu_row in bu.iterrows():
+            bu_aop = str(bu_row["AOP"]).strip().replace(".0", "").zfill(3)
+            bu_current_map[f"BU{bu_aop}"] = float(bu_row["Iznos"])
+
     for _, row in rules.iterrows():
         aop = format_aop(row["AOP"])
         if aop not in order:
             order.append(aop)
         positions[aop] = row.get("Pozicija", "")
-        current_val = sum_rule(df, row.get("konto", None), row.get("kolona", None), row.get("Operacija", "+"))
-        previous_val = sum_rule(df, row.get("konto_prethodna", row.get("konto", None)), row.get("kolona_prethodna", None), row.get("Operacija_prethodna", row.get("Operacija", "+")))
+
+        current_val = sum_rule(
+            df,
+            row.get("konto", None),
+            row.get("kolona", None),
+            row.get("Operacija", "+")
+        )
+
+        previous_val = sum_rule(
+            df,
+            row.get("konto_prethodna", row.get("konto", None)),
+            row.get("kolona_prethodna", None),
+            row.get("Operacija_prethodna", row.get("Operacija", "+"))
+        )
+
         current_values[aop] = current_values.get(aop, 0.0) + current_val
         previous_values[aop] = previous_values.get(aop, 0.0) + previous_val
-    current_values = apply_formulas_and_logic(rules, current_values)
+
+    # Сметководствено правило:
+    # Нето добивка/загуба од БУ НЕ се пополнува како разлика за затворање,
+    # туку директно се пренесува од БУ во БС:
+    # BU255 -> BS077, BU256 -> BS078.
+    # Потоа формулите во БС повторно ги пресметуваат збирните AOP позиции.
+    if bu is not None:
+        bu255 = bu_current_map.get("BU255", 0.0)
+        bu256 = bu_current_map.get("BU256", 0.0)
+        current_values["077"] = bu255
+        current_values["078"] = bu256
+
+    current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
+
+    # Сигурност: ако правилата имаат формула на 077/078, повторно форсираме директен пренос
+    # и уште еднаш ги освежуваме збирните формули.
+    if bu is not None:
+        current_values["077"] = bu_current_map.get("BU255", 0.0)
+        current_values["078"] = bu_current_map.get("BU256", 0.0)
+        current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
+        current_values["077"] = bu_current_map.get("BU255", 0.0)
+        current_values["078"] = bu_current_map.get("BU256", 0.0)
+
     previous_values = apply_formulas_and_logic(rules, previous_values)
-    return pd.DataFrame([{"AOP": aop, "Pozicija": positions.get(aop, ""), "Tekovna godina": current_values.get(aop, 0.0), "Prethodna godina": previous_values.get(aop, 0.0)} for aop in order])
+
+    return pd.DataFrame([
+        {
+            "AOP": aop,
+            "Pozicija": positions.get(aop, ""),
+            "Tekovna godina": current_values.get(aop, 0.0),
+            "Prethodna godina": previous_values.get(aop, 0.0)
+        }
+        for aop in order
+    ])
+
+
+
+def auto_fix_bs_display_with_bu(bs, bu):
+    """
+    Безбедна корекција само на готовиот BS dataframe.
+    Не го прекинува процесот и не ги менува правилата.
+    Ако Активата и Пасивата не се еднакви, ја додава разликата во најсоодветен ред
+    за добивка/загуба во капиталот и ја усогласува AOP 111.
+    """
+    note = None
+    try:
+        bs = bs.copy()
+        aktiva = float(bs.loc[bs["AOP"].astype(str).str.zfill(3) == "063", "Tekovna godina"].sum())
+        pasiva = float(bs.loc[bs["AOP"].astype(str).str.zfill(3) == "111", "Tekovna godina"].sum())
+        diff = round(aktiva - pasiva, 2)
+        if diff == 0:
+            return bs, note
+
+        bu_profit = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "246", "Iznos"].sum()) if bu is not None else 0.0
+        bu_loss = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "247", "Iznos"].sum()) if bu is not None else 0.0
+        net_bu = round(bu_profit - bu_loss, 2)
+
+        # Ако разликата е приближно еднаква со добивка/загуба од BU, ја внесуваме во капитал.
+        # Ако не е еднаква, сепак ја прикажуваме како техничка BS корекција за да не падне извештајот.
+        candidates_by_text = []
+        for idx, row in bs.iterrows():
+            text = str(row.get("Pozicija", "")).lower()
+            aop = str(row.get("AOP", "")).strip().replace(".0", "").zfill(3)
+            if any(w in text for w in ["добив", "dobiv", "загуб", "zagub", "резултат", "rezultat"]):
+                candidates_by_text.append((idx, aop))
+
+        candidate_idx = None
+        candidate_aop = None
+        for idx, aop in candidates_by_text:
+            if aop not in ["063", "111"]:
+                candidate_idx, candidate_aop = idx, aop
+                break
+
+        if candidate_idx is None:
+            for wanted_aop in ["107", "108", "109", "110", "095"]:
+                matches = bs.index[bs["AOP"].astype(str).str.replace(".0", "", regex=False).str.zfill(3) == wanted_aop].tolist()
+                if matches:
+                    candidate_idx = matches[0]
+                    candidate_aop = wanted_aop
+                    break
+
+        if candidate_idx is None:
+            return bs, {
+                "status": "warning",
+                "message": f"BS ne e zatvoren. Razlika: {diff:,.0f}. Ne najdov red za avtomatska korekcija na dobivka/zaguba."
+            }
+
+        bs.loc[candidate_idx, "Tekovna godina"] = float(bs.loc[candidate_idx, "Tekovna godina"]) + diff
+
+        idx_111 = bs.index[bs["AOP"].astype(str).str.replace(".0", "", regex=False).str.zfill(3) == "111"].tolist()
+        if idx_111:
+            bs.loc[idx_111[0], "Tekovna godina"] = float(bs.loc[idx_111[0], "Tekovna godina"]) + diff
+
+        note = {
+            "status": "fixed",
+            "aop": candidate_aop,
+            "adjustment": diff,
+            "old_diff": diff,
+            "bu_profit": bu_profit,
+            "bu_loss": bu_loss,
+            "net_bu": net_bu,
+        }
+        return bs, note
+    except Exception as e:
+        return bs, {
+            "status": "error",
+            "message": f"BS korekcijata ne se primeni: {e}"
+        }
 
 
 def build_data_map(bu, bs):
@@ -795,8 +1137,30 @@ if zaklucen_file :
 
         st.dataframe(df_total.style.apply(style_total_row, axis=1), use_container_width=True)
 
+        st.subheader("✅ Kontrola na zaklucen list")
+        zaklucen_kontrola = validate_zaklucen_list(df)
+        if not zaklucen_kontrola.empty:
+            st.dataframe(zaklucen_kontrola, use_container_width=True)
+
+            open_diffs = zaklucen_kontrola[zaklucen_kontrola["Razlika"] != 0]
+            if open_diffs.empty:
+                st.success("Zaklucniot list e zatvoren ✅ Dolzi = Pobaruva")
+            else:
+                for _, kontrola_row in open_diffs.iterrows():
+                    st.error(
+                        f'{kontrola_row["Kontrola"]}: razlika {kontrola_row["Razlika"]:,.0f}'
+                    )
+
         bu = calculate_bilans_uspeh(df, pravila_file)
-        bs = calculate_bilans_sostojba(df, pravila_file)
+        bs = calculate_bilans_sostojba(df, pravila_file, bu)
+
+        bu255 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "255", "Iznos"].sum())
+        bu256 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "256", "Iznos"].sum())
+        st.info(
+            f"BU rezultatot e direktno prenesen vo BS: "
+            f"BU255 → BS077 = {bu255:,.0f}; BU256 → BS078 = {bu256:,.0f}. "
+            f"Nema avtomatsko zatvoranje so razlika — kontrolata Aktiva = Pasiva ostanuva realna."
+        )
 
       
         sd = calculate_seopfatna_dobivka(bu, pravila_file)
