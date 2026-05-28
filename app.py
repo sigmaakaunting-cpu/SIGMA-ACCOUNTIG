@@ -6,6 +6,8 @@ from io import BytesIO
 from PIL import Image
 import pdfplumber
 import os
+from datetime import datetime, timedelta
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -53,6 +55,14 @@ USERS = {
     "sigma": "12345",
     "client1": "test123"
 }
+
+
+
+
+def premium_lock(module_name):
+    st.warning(f"{module_name} е достапен само во PREMIUM верзија")
+    st.info("Овој модул е отклучен само за PREMIUM корисници.")
+
 
 st.markdown("""
 <style>
@@ -121,6 +131,71 @@ if "logged_in" not in st.session_state:
 if not st.session_state["logged_in"]:
     login()
     st.stop()
+
+username = st.session_state["username"]
+
+USERS_INFO = {
+    "sigma": {
+        "plan": "PREMIUM",
+        "trial_start": None,
+        "trial_days": None
+    },
+    "client1": {
+        "plan": "TRIAL",
+        "trial_start": "2026-05-28",
+        "trial_days": 14
+    }
+}
+
+user_info = USERS_INFO.get(username, {
+    "plan": "FREE",
+    "trial_start": None,
+    "trial_days": None
+})
+
+user_plan = user_info["plan"]
+
+# =========================
+# TRIAL LOGIC
+# =========================
+
+if user_plan == "TRIAL":
+
+    trial_start = datetime.strptime(
+        user_info["trial_start"],
+        "%Y-%m-%d"
+    )
+
+    trial_end = trial_start + timedelta(
+        days=user_info["trial_days"]
+    )
+
+    days_left = (trial_end - datetime.now()).days
+
+    if datetime.now() <= trial_end:
+
+        user_plan = "PREMIUM"
+
+        st.sidebar.info(
+            f"""
+🎁 TRIAL VERSION
+
+Premium модулите се активни.
+
+⏳ Преостанати денови: {days_left}
+
+📅 Активно до:
+{trial_end.strftime('%d.%m.%Y')}
+"""
+        )
+
+    else:
+
+        user_plan = "FREE"
+
+        st.sidebar.warning(
+            "🔒 TRIAL периодот е истечен"
+        )
 
 if os.path.exists("assets/sigma_logo.png"):
     logo = Image.open("assets/sigma_logo.png")
@@ -1156,11 +1231,11 @@ if zaklucen_file :
 
         bu255 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "255", "Iznos"].sum())
         bu256 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "256", "Iznos"].sum())
-        st.info(
-            f"BU rezultatot e direktno prenesen vo BS: "
-            f"BU255 → BS077 = {bu255:,.0f}; BU256 → BS078 = {bu256:,.0f}. "
-            f"Nema avtomatsko zatvoranje so razlika — kontrolata Aktiva = Pasiva ostanuva realna."
-        )
+        #st.info(
+            #f"BU rezultatot e direktno prenesen vo BS: "
+            #f"BU255 → BS077 = {bu255:,.0f}; BU256 → BS078 = {bu256:,.0f}. "
+            #f"Nema avtomatsko zatvoranje so razlika — kontrolata Aktiva = Pasiva ostanuva realna."
+        #)
 
       
         sd = calculate_seopfatna_dobivka(bu, pravila_file)
@@ -1278,6 +1353,24 @@ if zaklucen_file :
         else:
             st.error(f"Prethodna godina: Razlika ❌ {razlika_prev:,.0f}")
 
+        def premium_lock(module_name):
+            #st.warning(f"Modulot '{module_name} е достапен само во PREMIUM верзија. За пристап, ве молиме контактирајте не на [email protected]")
+            st.info(" Овој модул содржи напредни функции и анализи кои се достапни само за корисниците со PREMIUM пристап. За повеќе информации за тоа како да добиете пристап до PREMIUM верзијата, контактирајте не на [email sigmaakaunting@gmail.com]")
+            st.button("Upgrade to PREMIUM - {module_name}",
+                      disabled=True,
+                      key=f"upgrade_{module_name}"
+                      )
+            
+        def blur_numbers_df(df):
+            demo = df.copy()
+
+            for col in demo.columns:
+                if col not in ["AOP", "Pozicija", "Naziv", "Red", "Kategorija", "Opis", "Status"]:
+                    demo[col] = "••••••"
+
+            return demo    
+            
+        
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard", "Seopfatna dobivka", "Valuation Dashboard "])
         with tab1:
             st.subheader("Bilans na uspeh po AOP")
@@ -1287,10 +1380,33 @@ if zaklucen_file :
             st.dataframe(bs.style.apply(style_formula_rows, axis=1), use_container_width=True)
         with tab3:
             st.subheader("Cash Flow")
+
             if cf is not None:
-                st.dataframe(cf.style.apply(style_cashflow_rows, axis=1), use_container_width=True)
+
+                if user_plan == "PREMIUM":
+                    st.dataframe(
+                        cf.style.apply(style_cashflow_rows, axis=1),
+                        use_container_width=True
+                    )
+
+                else:
+                    st.warning("🔒 Cash Flow е PREMIUM модул. Бројките се скриени.")
+
+                    cf_demo = cf.copy()
+                    cf_demo["Iznos"] = "••••••"
+
+                    st.dataframe(
+                        cf_demo,
+                        use_container_width=True
+                    )
+
+                    premium_lock("Cash Flow")
+
             else:
                 st.warning("Cash Flow ne e vcitan.")
+
+
+            
         with tab4:
             
 
@@ -1388,57 +1504,128 @@ if zaklucen_file :
 
             st.subheader("📈 Проценка на вредност / Valuation Dashboard")
 
-            multiple = st.number_input(
-                "EBITDA Multiple",
-                min_value=1.0,
-                max_value=10.0,
-                value=4.0,
-                step=0.5
-            )
+            if user_plan != "PREMIUM":
 
-            enterprise_value = ebitda * multiple
-            equity_value = enterprise_value + cash - debt
-            conservative_value = ebitda * 3
-            fair_value = ebitda * 4
-            optimistic_value = ebitda * 5
+                st.warning("🔒 Valuation Dashboard е PREMIUM модул. Бројките се скриени.")
 
-            conservative_equity = conservative_value + cash - debt
-            fair_equity = fair_value + cash - debt
-            optimistic_equity = optimistic_value + cash - debt
+                col1, col2, col3 = st.columns(3)
 
-            col1, col2, col3 = st.columns(3)
+                col1.metric("EBITDA / ЕБИТДА", "••••••")
+                col2.metric("Enterprise Value / ВРЕДНОСТ НА КОМПАНИЈАТА", "••••••")
+                col3.metric("Equity Value / ВРЕДНОСТ НА КАПИТАЛОТ", "••••••")
 
-            col1.metric("EBITDA / ЕБИТДА", f"{ebitda:,.0f}")
-            col2.metric("Enterprise Value / ВРЕДНОСТ НА КОМПАНИЈАТА", f"{enterprise_value:,.0f}")
-            col3.metric("Equity Value / ВРЕДНОСТ НА КАПИТАЛОТ", f"{equity_value:,.0f}")
+                col4, col5 = st.columns(2)
 
-            col4, col5 = st.columns(2)
+                col4.metric("Cash / Парични средства", "••••••")
+                col5.metric("Debt / Финансиски долг", "••••••")
 
-            col4.metric("Cash / Парични средства", f"{cash:,.0f}")
-            col5.metric("Debt / Финансиски долг", f"{debt:,.0f}")
-            conservative_value = ebitda * 3
-            fair_value = ebitda * 4
-            optimistic_value = ebitda * 5
+                st.subheader("📊 Valuation Range / Опсег на проценка")
 
-            
-            st.subheader("📊 Valuation Range / Опсег на проценка")
+                c1, c2, c3 = st.columns(3)
 
-            c1, c2, c3 = st.columns(3)
+                c1.metric("Conservative / Конзервативна (3x)", "••••••")
+                c2.metric("Fair Value / Реална вредност (4x)", "••••••")
+                c3.metric("Optimistic / Оптимистичка вредност (5x)", "••••••")
 
-            c1.metric(
-                "Conservative / Конзервативна (3x)",
-                f"{conservative_equity:,.0f}"
-            )
 
-            c2.metric(
-                "Fair Value / Реална вредност (4x)",
-                f"{fair_equity:,.0f}"
-            )
+                premium_lock("Valuation Dashboard")
 
-            c3.metric(
-                "Optimistic / Оптимистичка вредност(5x)",
-                f"{optimistic_equity:,.0f}"
-            )
+            else:
+
+                multiple = st.number_input(
+                    "EBITDA Multiple",
+                    min_value=1.0,
+                    max_value=10.0,
+                    value=4.0,
+                    step=0.5
+                )
+
+                enterprise_value = ebitda * multiple
+                equity_value = enterprise_value + cash - debt
+
+                conservative_value = ebitda * 3
+                fair_value = ebitda * 4
+                optimistic_value = ebitda * 5
+
+                conservative_equity = conservative_value + cash - debt
+                fair_equity = fair_value + cash - debt
+                optimistic_equity = optimistic_value + cash - debt
+
+                col1, col2, col3 = st.columns(3)
+
+                col1.metric("EBITDA / ЕБИТДА", f"{ebitda:,.0f}")
+                col2.metric("Enterprise Value / ВРЕДНОСТ НА КОМПАНИЈАТА", f"{enterprise_value:,.0f}")
+                col3.metric("Equity Value / ВРЕДНОСТ НА КАПИТАЛОТ", f"{equity_value:,.0f}")
+
+                col4, col5 = st.columns(2)
+
+                col4.metric("Cash / Парични средства", f"{cash:,.0f}")
+                col5.metric("Debt / Финансиски долг", f"{debt:,.0f}")
+
+                st.subheader("📊 Valuation Range / Опсег на проценка")
+
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric("Conservative / Конзервативна (3x)", f"{conservative_equity:,.0f}")
+                c2.metric("Fair Value / Реална вредност (4x)", f"{fair_equity:,.0f}")
+                c3.metric("Optimistic / Оптимистичка вредност (5x)", f"{optimistic_equity:,.0f}")
+                st.subheader("📉 DCF Valuation / Проценка по DCF метод")
+
+                dcf_years = st.number_input(
+                    "Период на проекција - години",
+                    min_value=1,
+                    max_value=10,
+                    value=5,
+                    step=1
+                )
+
+                growth_rate = st.number_input(
+                    "Годишен раст на Cash Flow (%)",
+                    min_value=-20.0,
+                    max_value=50.0,
+                    value=5.0,
+                    step=0.5
+                ) / 100
+
+                discount_rate = st.number_input(
+                    "Discount rate / Стапка на дисконтирање (%)",
+                    min_value=1.0,
+                    max_value=50.0,
+                    value=12.0,
+                    step=0.5
+                ) / 100
+
+                terminal_growth = st.number_input(
+                    "Terminal growth rate (%)",
+                    min_value=0.0,
+                    max_value=10.0,
+                    value=2.0,
+                    step=0.5
+                ) / 100
+
+                base_cash_flow = ebitda
+
+                dcf_value = 0
+
+                for year in range(1, dcf_years + 1):
+                    projected_cf = base_cash_flow * ((1 + growth_rate) ** year)
+                    discounted_cf = projected_cf / ((1 + discount_rate) ** year)
+                    dcf_value += discounted_cf
+
+                terminal_value = (
+                    projected_cf * (1 + terminal_growth)
+                ) / (discount_rate - terminal_growth)
+
+                discounted_terminal_value = terminal_value / ((1 + discount_rate) ** dcf_years)
+
+                enterprise_value_dcf = dcf_value + discounted_terminal_value
+                equity_value_dcf = enterprise_value_dcf + cash - debt
+
+                d1, d2, d3 = st.columns(3)
+
+                d1.metric("DCF Enterprise Value", f"{enterprise_value_dcf:,.0f}")
+                d2.metric("DCF Equity Value", f"{equity_value_dcf:,.0f}")
+                d3.metric("Terminal Value", f"{discounted_terminal_value:,.0f}")
 
         export_sheets = {"Zaklucen list": df_total, "Bilans uspeh AOP": bu, "Bilans sostojba AOP": bs}
         if cf is not None:
