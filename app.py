@@ -818,6 +818,111 @@ def calculate_seopfatna_dobivka(bu, rules_file):
     return pd.DataFrame(rows)
 
 
+
+# =====================================================
+# PROPORCIONALNA RASPREDELBA NA ZBIRNA ISPRAVKA 019
+# =====================================================
+
+def norm_konto_019(x):
+    return (
+        str(x)
+        .replace("-", "")
+        .replace("/", "")
+        .replace(".", "")
+        .replace(" ", "")
+        .strip()
+    )
+
+
+def suma_konto_019_exact(df, konto, kolona):
+    """
+    Go zema samo sintetickoto konto:
+    019, 0190, 019000, 019-000, 019/000...
+    No ne gi zema analitikite 0191, 0192, 0193...
+    """
+    if "konto" not in df.columns or kolona not in df.columns:
+        return 0.0
+
+    k = norm_konto_019(konto)
+    df_konta = df["konto"].astype(str).apply(norm_konto_019)
+
+    mask = df_konta.str.fullmatch(k + r"0*")
+    return float(df.loc[mask, kolona].sum())
+
+
+def ima_analitika_019(df):
+    """
+    Vraka True ako postoi 0191, 0192, 0193...
+    Tuka 0190 i 019000 NE se smetaat za analitika, tuku za zbirno 019.
+    """
+    if "konto" not in df.columns:
+        return False
+
+    df_konta = df["konto"].astype(str).apply(norm_konto_019)
+    return df_konta.str.match(r"019[1-9]").any()
+
+
+def ima_zbirno_019(df):
+    if "konto" not in df.columns:
+        return False
+
+    df_konta = df["konto"].astype(str).apply(norm_konto_019)
+    return df_konta.str.fullmatch(r"0190*").any()
+
+
+def raspredeli_019_proporcionalno(df, values, kolona_019, kolona_bruto):
+    """
+    Ako nema analitika 0191/0192/0193..., a ima samo zbirno 019,
+    togash 019 se odzema proporcionalno od site materijalni sredstva
+    koi imaat bruto vrednost > 0.
+
+    Vazno:
+    - AOP 015 ne sme da ja nosi celata amortizacija 019.
+    - Zatoa vo ovoj slucaj AOP 015 se postavuva na 0.
+    """
+    if not ima_zbirno_019(df):
+        return values
+
+    if ima_analitika_019(df):
+        return values
+
+    iznos_019 = abs(suma_konto_019_exact(df, "019", kolona_019))
+
+    if iznos_019 == 0:
+        return values
+
+    # AOP -> bruto konto
+    bruto_map = {
+        "012": "011",
+        "013": "012",
+        "014": "013",
+        "016": "014",
+        "019": "015",
+    }
+
+    bruto_values = {}
+    vkupno_bruto = 0.0
+
+    for aop, konto in bruto_map.items():
+        bruto = abs(suma_konto_019_exact(df, konto, kolona_bruto))
+
+        if bruto > 0:
+            bruto_values[aop] = bruto
+            vkupno_bruto += bruto
+
+    if vkupno_bruto == 0:
+        return values
+
+    # 019 ne smee celosno da ostane vo AOP 015
+    values["015"] = 0.0
+
+    # Odzemi proporcionalen del od 019 od site sredstva so bruto > 0
+    for aop, bruto in bruto_values.items():
+        del_od_019 = iznos_019 * (bruto / vkupno_bruto)
+        values[aop] = values.get(aop, 0.0) - del_od_019
+
+    return values
+
 def calculate_bilans_sostojba(df, rules_file, bu=None):
     rules = read_rules(rules_file, "Pravila bilans Sostojba")
     current_values, previous_values, positions, order = {}, {}, {}, []
@@ -862,6 +967,13 @@ def calculate_bilans_sostojba(df, rules_file, bu=None):
         current_values["077"] = bu255
         current_values["078"] = bu256
 
+    current_values = raspredeli_019_proporcionalno(
+        df,
+        current_values,
+        "krajno_pobaruva",
+        "krajno_dolzi"
+    )
+
     current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
 
     # Сигурност: ако правилата имаат формула на 077/078, повторно форсираме директен пренос
@@ -872,6 +984,13 @@ def calculate_bilans_sostojba(df, rules_file, bu=None):
         current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
         current_values["077"] = bu_current_map.get("BU255", 0.0)
         current_values["078"] = bu_current_map.get("BU256", 0.0)
+
+    previous_values = raspredeli_019_proporcionalno(
+        df,
+        previous_values,
+        "prethodna_pobaruva",
+        "prethodna_dolzi"
+    )
 
     previous_values = apply_formulas_and_logic(rules, previous_values)
 
@@ -1229,6 +1348,12 @@ if zaklucen_file :
         bu = calculate_bilans_uspeh(df, pravila_file)
         bs = calculate_bilans_sostojba(df, pravila_file, bu)
 
+        if ima_zbirno_019(df) and not ima_analitika_019(df):
+            st.warning(
+                "⚠️ Детектирано е збирно конто 019 без аналитика 0191/0192/0193. "
+                "Исправката на вредност 019 е распределена пропорционално по материјални средства со бруто вредност > 0."
+            )
+
         bu255 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "255", "Iznos"].sum())
         bu256 = float(bu.loc[bu["AOP"].astype(str).str.zfill(3) == "256", "Iznos"].sum())
         #st.info(
@@ -1502,7 +1627,7 @@ if zaklucen_file :
 
         with tab6:
 
-            st.subheader("📈 Проценка на вредност / Valuation Dashboard")
+            st.subheader("📈 EBITDA Valuation / ПРОЦЕНКА d")
 
             if user_plan != "PREMIUM":
 
