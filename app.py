@@ -9,7 +9,7 @@ import pdfplumber
 import os
 from datetime import datetime, timedelta
 
-APP_VERSION = "SIGMA ONLINE/LOCAL FINAL - 29.05.2026"
+APP_VERSION = "SIGMA PREMIUM SIDEBAR - 30.05.2026"
 
 
 def clean_number(x):
@@ -141,10 +141,150 @@ def calculate_formula(formula, values_dict):
 
 st.set_page_config(page_title="AOP Finansiski Izvestai", layout="wide")
 
-st.sidebar.success(APP_VERSION)
-st.sidebar.write("Pandas:", pd.__version__)
-st.sidebar.write("NumPy:", np.__version__)
-st.sidebar.write("Работна папка:", os.getcwd())
+# =========================
+# PREMIUM SIDEBAR DESIGN
+# =========================
+st.markdown("""
+<style>
+
+/* Main sidebar background */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0f172a 0%, #111827 48%, #020617 100%);
+    border-right: 1px solid rgba(255,255,255,0.08);
+}
+
+/* Sidebar inner spacing */
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 1.1rem;
+}
+
+/* Sidebar text default */
+[data-testid="stSidebar"] * {
+    color: #e5e7eb;
+}
+
+/* Premium brand card */
+.sigma-brand-card {
+    background: linear-gradient(135deg, rgba(37,99,235,0.95), rgba(14,165,233,0.78));
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 18px;
+    padding: 16px 14px;
+    margin: 4px 0 14px 0;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.32);
+}
+
+.sigma-brand-title {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    color: #ffffff;
+    margin-bottom: 3px;
+}
+
+.sigma-brand-subtitle {
+    font-size: 12px;
+    color: rgba(255,255,255,0.86);
+    line-height: 1.35;
+}
+
+.sigma-version-pill {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: rgba(15,23,42,0.36);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+/* Sidebar section labels */
+.sigma-sidebar-section {
+    margin: 16px 0 8px 0;
+    color: #93c5fd;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+/* Radio block spacing */
+[data-testid="stSidebar"] .stRadio > div {
+    gap: 7px;
+}
+
+/* Radio option cards */
+[data-testid="stSidebar"] .stRadio label {
+    background: rgba(255,255,255,0.055);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 13px;
+    padding: 10px 12px;
+    margin-bottom: 4px;
+    transition: all 0.18s ease;
+}
+
+[data-testid="stSidebar"] .stRadio label:hover {
+    background: rgba(37,99,235,0.20);
+    border-color: rgba(96,165,250,0.45);
+    transform: translateX(3px);
+}
+
+/* Hide default tiny radio circle a bit */
+[data-testid="stSidebar"] .stRadio label > div:first-child {
+    opacity: 0.72;
+}
+
+/* Inputs inside sidebar */
+[data-testid="stSidebar"] input {
+    background-color: rgba(255,255,255,0.08) !important;
+    color: #ffffff !important;
+    border-radius: 10px !important;
+}
+
+/* Sidebar buttons */
+[data-testid="stSidebar"] button {
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+}
+
+/* Expander styling */
+[data-testid="stSidebar"] details {
+    background: rgba(255,255,255,0.055);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 4px 8px;
+}
+
+/* Small footer */
+.sigma-sidebar-footer {
+    margin-top: 18px;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.055);
+    border: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px;
+    line-height: 1.4;
+    color: #cbd5e1;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+st.sidebar.markdown(
+    f"""
+    <div class="sigma-brand-card">
+        <div class="sigma-brand-title">📊 SIGMA</div>
+        <div class="sigma-brand-subtitle">Accounting reporting dashboard<br>Финансиски извештаи и анализа</div>
+        <div class="sigma-version-pill">{APP_VERSION}</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+with st.sidebar.expander("🔎 System info", expanded=False):
+    st.write("Pandas:", pd.__version__)
+    st.write("NumPy:", np.__version__)
+    st.write("Работна папка:", os.getcwd())
 USERS = {
     "sigma": "12345",
     "client1": "test123"
@@ -835,6 +975,7 @@ def apply_formulas_and_logic(rules, values, external_values=None):
     return values
 
 
+@st.cache_data(show_spinner=False)
 def calculate_bilans_uspeh(df, rules_file):
     rules = read_rules(rules_file, "Pravila Bilans Uspeh")
     values, positions, order = {}, {}, []
@@ -849,6 +990,7 @@ def calculate_bilans_uspeh(df, rules_file):
     return pd.DataFrame([{"AOP": aop, "Pozicija": positions.get(aop, ""), "Iznos": values.get(aop, 0.0)} for aop in order])
 
 
+@st.cache_data(show_spinner=False)
 def calculate_seopfatna_dobivka(bu, rules_file):
 
     rules = pd.read_excel(
@@ -1010,6 +1152,7 @@ def raspredeli_019_proporcionalno(df, values, kolona_019, kolona_bruto):
 
     return values
 
+@st.cache_data(show_spinner=False)
 def calculate_bilans_sostojba(df, rules_file, bu=None):
     rules = read_rules(rules_file, "Pravila bilans Sostojba")
     current_values, previous_values, positions, order = {}, {}, {}, []
@@ -1181,6 +1324,7 @@ def build_data_map(bu, bs):
     return data_map
 
 
+@st.cache_data(show_spinner=False)
 def calculate_cash_flow(df, rules_file, bu, bs):
     rules = read_rules(rules_file, "Pravila CF")
     data_map = build_data_map(bu, bs)
@@ -1217,6 +1361,7 @@ def calculate_cash_flow(df, rules_file, bu, bs):
     return pd.DataFrame([{"AOP": aop, "Pozicija": positions.get(aop, ""), "Iznos": values.get(aop, 0.0)} for aop in order])
 
 
+@st.cache_data(show_spinner=False)
 def calculate_kpi(rules_file, bu, bs, broj_vraboteni=0, meseci_rabotenje=0):
     rules = read_rules(rules_file, "Pravila KPI")
     data_map = build_data_map(bu, bs)
@@ -1283,6 +1428,7 @@ def calculate_kpi(rules_file, bu, bs, broj_vraboteni=0, meseci_rabotenje=0):
 
     return pd.DataFrame(results)
 
+@st.cache_data(show_spinner=False)
 def export_excel(sheets):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -1308,49 +1454,195 @@ def style_cashflow_rows(row):
     return ["" for _ in row]
 
 
+def prepare_pdf_dataframe(df):
+    """
+    Kompaktna PDF verzija: gi trga redovite kade sto site brojceni koloni se 0.
+    Excel exportot ostanuva celosen; ova vazi samo za PDF za pecatenje.
+    """
+    compact = df.copy()
+
+    numeric_cols = []
+    for col in compact.columns:
+        if col in ["AOP", "Pozicija", "Naziv", "Red", "Kategorija", "Opis", "Status"]:
+            continue
+        test_values = pd.to_numeric(compact[col], errors="coerce")
+        if test_values.notna().any():
+            numeric_cols.append(col)
+            compact[col] = test_values.fillna(0)
+
+    if numeric_cols:
+        mask = compact[numeric_cols].abs().sum(axis=1) != 0
+        compact = compact[mask].copy()
+
+    return compact.reset_index(drop=True)
+
+
+def format_pdf_value(x):
+    try:
+        if pd.isna(x):
+            return ""
+        if isinstance(x, (int, float, np.integer, np.floating)):
+            return f"{float(x):,.0f}"
+        return str(x)
+    except Exception:
+        return str(x)
+
+
+@st.cache_data(show_spinner=False)
 def export_single_pdf(df, title, file_title):
     output = BytesIO()
-    doc = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+
+    # Kompakten A4 landscape PDF: pomali margini + pomal font + skrieni nulti redovi
+    pdf_df = prepare_pdf_dataframe(df)
+
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=landscape(A4),
+        rightMargin=10,
+        leftMargin=10,
+        topMargin=10,
+        bottomMargin=10,
+    )
+
     styles = getSampleStyleSheet()
     styles["Title"].fontName = "PDF_Font_Bold"
-    elements = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
-    data = [list(df.columns)] + df.astype(str).values.tolist()
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
+    styles["Title"].fontSize = 11
+    styles["Title"].leading = 12
 
-    # HEADER
-    ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f2937")),
-    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-    ('FONTNAME', (0,0), (-1,0), 'PDF_Font_Bold'),
-    ('FONTSIZE', (0,0), (-1,0), 12),
-    ('BOTTOMPADDING', (0,0), (-1,0), 10),
+    # VAŽNO: Paragraph tekstot ne ja prima TEXTCOLOR komandata od TableStyle.
+    # Zatoa pravime posebni paragraph stilovi za obicni, subtotal i main-total redovi.
+    from reportlab.lib.styles import ParagraphStyle
 
-    # BODY
-    ('FONTNAME', (0,1), (-1,-1), 'PDF_Font'),
-    ('FONTSIZE', (0,1), (-1,-1), 10),
+    cell_style = ParagraphStyle(
+        "PDF_Cell_Normal",
+        parent=styles["BodyText"],
+        fontName="PDF_Font",
+        fontSize=6.5,
+        leading=7.2,
+        textColor=colors.black,
+    )
 
-    # ALIGNMENTS
-    ('ALIGN', (2,1), (-1,-1), 'RIGHT'),
-    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    cell_style_bold = ParagraphStyle(
+        "PDF_Cell_Bold",
+        parent=cell_style,
+        fontName="PDF_Font_Bold",
+        fontSize=7.5,
+        leading=8.0,
+        textColor=colors.black,
+    )
 
-    # GRID
-    ('GRID', (0,0), (-1,-1), 0.7, colors.HexColor("#9ca3af")),
-    ('BOX', (0,0), (-1,-1), 1.2, colors.black),
+    cell_style_white = ParagraphStyle(
+        "PDF_Cell_White",
+        parent=cell_style,
+        fontName="PDF_Font_Bold",
+        fontSize=8.5,
+        leading=9.0,
+        textColor=colors.white,
+    )
 
-    # ROW BACKGROUND
-    ('BACKGROUND', (0,1), (-1,-1), colors.white),
+    elements = [Paragraph(title, styles["Title"]), Spacer(1, 4)]
 
-    # PADDING
-    ('TOPPADDING', (0,0), (-1,-1), 6),
-    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    display_df = pdf_df.copy()
+    for col in display_df.columns:
+        if col not in ["AOP", "Pozicija", "Naziv", "Red", "Kategorija", "Opis", "Status"]:
+            display_df[col] = display_df[col].apply(format_pdf_value)
 
-]))
+    # Redovi koi treba da bidat potencirani vo PDF isto kako na ekran
+    subtotal_rows = [
+        "201", "207", "213", "223", "224", "234", "235",
+        "001", "002", "009", "010", "020", "021", "031",
+        "036", "037", "045", "052", "053", "059", "065",
+        "071", "081", "082", "085", "095"
+    ]
+
+    main_total_rows = ["063", "111", "246", "247", "250", "251"]
+
+    data = [list(display_df.columns)]
+    row_aops = []
+
+    for _, row in display_df.iterrows():
+        aop = ""
+        if "AOP" in display_df.columns:
+            aop = str(row.get("AOP", "")).strip().replace(".0", "").zfill(3)
+        row_aops.append(aop)
+
+        if aop in main_total_rows:
+            paragraph_style = cell_style_white
+        elif aop in subtotal_rows:
+            paragraph_style = cell_style_bold
+        else:
+            paragraph_style = cell_style
+
+        pdf_row = []
+        for col in display_df.columns:
+            value = row[col]
+            if col in ["Pozicija", "Naziv", "Opis"]:
+                pdf_row.append(Paragraph(str(value), paragraph_style))
+            else:
+                pdf_row.append(str(value))
+        data.append(pdf_row)
+
+    col_count = len(display_df.columns)
+    if col_count == 3:
+        col_widths = [42, 630, 105]
+    elif col_count == 4:
+        col_widths = [38, 500, 115, 115]
+    else:
+        col_widths = None
+
+    table = Table(data, repeatRows=1, colWidths=col_widths)
+
+    style = TableStyle([
+        # HEADER
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'PDF_Font_Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 7),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 3),
+        ('TOPPADDING', (0, 0), (-1, 0), 3),
+
+        # BODY
+        ('FONTNAME', (0, 1), (-1, -1), 'PDF_Font'),
+        ('FONTSIZE', (0, 1), (-1, -1), 6.5),
+        ('LEADING', (0, 1), (-1, -1), 7),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+
+        # ALIGNMENTS
+        ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+
+        # GRID
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+        ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor("#334155")),
+
+        # PADDING
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 1), (-1, -1), 1.5),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 1.5),
+    ])
+
+    for i, aop in enumerate(row_aops, start=1):
+        if aop in subtotal_rows:
+            style.add("BACKGROUND", (0, i), (-1, i), colors.HexColor("#E5E7EB"))
+            style.add("FONTNAME", (0, i), (-1, i), "PDF_Font_Bold")
+            style.add("FONTSIZE", (0, i), (-1, i), 7.5)
+            style.add("TEXTCOLOR", (0, i), (-1, i), colors.black)
+
+        if aop in main_total_rows:
+            style.add("BACKGROUND", (0, i), (-1, i), colors.HexColor("#1E3A8A"))
+            style.add("TEXTCOLOR", (0, i), (-1, i), colors.white)
+            style.add("FONTNAME", (0, i), (-1, i), "PDF_Font_Bold")
+            style.add("FONTSIZE", (0, i), (-1, i), 8.5)
+
+    table.setStyle(style)
     elements.append(table)
     doc.build(elements)
     output.seek(0)
     return output.getvalue()
 
-
+@st.cache_data(show_spinner=False)
 def export_cash_flow_pdf(df):
     output = BytesIO()
     doc = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
@@ -1390,20 +1682,28 @@ def export_cash_flow_pdf(df):
     return output.getvalue()
 
 
+@st.cache_data(show_spinner=False)
+def load_zaklucen_cached(file_name, file_bytes):
+    """
+    Го чита заклучниот лист само еднаш за ист uploaded фајл.
+    При кликање низ sidebar Streamlit rerun веќе не го парсира PDF/Excel повторно.
+    """
+    file_obj = BytesIO(file_bytes)
+    file_obj.name = file_name
+
+    if file_name.lower().endswith(".pdf"):
+        df_loaded = read_zaklucen_pdf(file_obj)
+    else:
+        df_loaded = read_zaklucen(file_obj)
+
+    return normalize_dataframe_numbers(df_loaded)
+
+
 if zaklucen_file :
     try:
-        if zaklucen_file.name.lower().endswith(".pdf"):
-            df = read_zaklucen_pdf(zaklucen_file)
-            
-            #st.write("PDF DATAFRAME:")
-            #st.write(df.head())
-            #st.write(df.shape)
-
-        else:
-            df = read_zaklucen(zaklucen_file)
-
-        # FINALNA SIGURNOST: sekogas ista konverzija lokalno i online
-        df = normalize_dataframe_numbers(df)
+        # FINALNA SIGURNOST + SPEED:
+        # PDF/Excel се чита само еднаш за истиот upload фајл.
+        df = load_zaklucen_cached(zaklucen_file.name, zaklucen_file.getvalue())
 
         st.subheader("📑 Zaklucen list")
         sum_row = {"konto": "", "naziv": "VKUPNO"}
@@ -1518,25 +1818,24 @@ if zaklucen_file :
             cf = None
             st.warning(f"Cash Flow ne e vcitan: {cash_error}")
 
-        st.subheader("⚙️ KPI Дополнителни параметри")
+        with st.sidebar.expander("⚙️ KPI параметри", expanded=False):
+            broj_vraboteni = st.number_input(
+                "Број на вработени",
+                min_value=0,
+                value=0,
+                step=1,
+                key="broj_vraboteni_kpi"
+            )
 
-        broj_vraboteni = st.number_input(
-            "Број на вработени",
-            min_value=0,
-            value=0,
-            step=1,
-            key="broj_vraboteni_kpi"
+            meseci_rabotenje = st.number_input(
+                "Месеци на работење",
+                min_value=0,
+                max_value=12,
+                value=12,
+                step=1,
+                key="meseci_rabotenje_kpi"
+            )
 
-        )
-
-        meseci_rabotenje = st.number_input(
-            "Месеци на работење",
-            min_value=0,
-            max_value=12,
-            value=12,
-            step=1,
-            key="meseci_rabotenje_kpi"
-        ) 
         bu.loc[bu["AOP"] == "257", "Iznos"] = broj_vraboteni
         bu.loc[bu["AOP"] == "258", "Iznos"] = meseci_rabotenje
 
@@ -1587,14 +1886,48 @@ if zaklucen_file :
             return demo    
             
         
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Bilans na uspeh", "Bilans na sostojba", "Cash Flow", "KPI Dashboard", "Seopfatna dobivka", "Valuation Dashboard "])
-        with tab1:
+        st.sidebar.markdown('<div class="sigma-sidebar-section">Навигација</div>', unsafe_allow_html=True)
+
+        izbran_izvestaj = st.sidebar.radio(
+            "",
+            [
+                "🏠 Заклучен лист",
+                "📈 Биланс на успех",
+                "🏦 Биланс на состојба",
+                "💧 Cash Flow",
+                "📊 KPI Dashboard",
+                "🧾 Сеопфатна добивка",
+                "💎 Valuation Dashboard"
+            ],
+            index=0,
+            key="izbran_izvestaj_sidebar",
+            label_visibility="collapsed"
+        )
+
+        st.sidebar.markdown(
+            """
+            <div class="sigma-sidebar-footer">
+                <b>PREMIUM модул</b><br>
+                Извештаи, KPI, Cash Flow и Valuation на едно место.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.divider()
+
+        if izbran_izvestaj == "🏠 Заклучен лист":
+            st.info("📑 Заклучниот лист и контролите се прикажани погоре.")
+
+        elif izbran_izvestaj == "📈 Биланс на успех":
             st.subheader("Bilans na uspeh po AOP")
             st.dataframe(bu.style.apply(style_formula_rows, axis=1), use_container_width=True)
-        with tab2:
+
+        elif izbran_izvestaj == "🏦 Биланс на состојба":
             st.subheader("Bilans na sostojba po AOP")
             st.dataframe(bs.style.apply(style_formula_rows, axis=1), use_container_width=True)
-        with tab3:
+
+        elif izbran_izvestaj == "💧 Cash Flow":
             st.subheader("Cash Flow")
 
             if cf is not None:
@@ -1621,11 +1954,7 @@ if zaklucen_file :
             else:
                 st.warning("Cash Flow ne e vcitan.")
 
-
-            
-        with tab4:
-            
-
+        elif izbran_izvestaj == "📊 KPI Dashboard":
             st.subheader("KPI Dashboard")
 
             if kpi is not None:
@@ -1672,53 +2001,41 @@ if zaklucen_file :
                         st.info(f"{naziv}: {vrednost}")
 
                 with st.expander("📋 Детално објаснување на KPI"):
-
-                    st.dataframe(
-                        kpi,
-                        use_container_width=True
-                    )
+                    st.dataframe(kpi, use_container_width=True)
 
             else:
-
                 st.warning("KPI ne e vcitan.")
 
-        with tab5:
-
+        elif izbran_izvestaj == "🧾 Сеопфатна добивка":
             st.subheader("📊 Извештај за сеопфатна добивка")
 
             display_sd = sd[["Red", "Naziv", "Tekovna godina"]]
 
             def highlight_totals(row):
+                if str(sd.loc[row.name, "Stil"]).lower() == "total":
+                    return [
+                        "font-weight: bold; font-size: 18px;"
+                        for _ in row
+                    ]
 
-                 if str(sd.loc[row.name, "Stil"]).lower() == "total":
-
-                     return [
-                         "font-weight: bold; font-size: 18px;"
-                         for _ in row
-        ]
-                 
-         
-
-
-                 return ["" for _ in row]
+                return ["" for _ in row]
 
             styled_sd = (
-                 display_sd.style
-                 .format({
-                     "Tekovna godina": "{:,.2f}"
-            })
-                 .apply(highlight_totals, axis=1)
-)
+                display_sd.style
+                .format({
+                    "Tekovna godina": "{:,.2f}"
+                })
+                .apply(highlight_totals, axis=1)
+            )
 
             st.dataframe(
-                     styled_sd,
-                     use_container_width=True,
-                     height=700
-)
+                styled_sd,
+                use_container_width=True,
+                height=700
+            )
 
-        with tab6:
-
-            st.subheader("📈 EBITDA Valuation / ПРОЦЕНКА d")
+        elif izbran_izvestaj == "💎 Valuation Dashboard":
+            st.subheader("📈 EBITDA Valuation / ПРОЦЕНКА")
 
             if user_plan != "PREMIUM":
 
@@ -1742,7 +2059,6 @@ if zaklucen_file :
                 c1.metric("Conservative / Конзервативна (3x)", "••••••")
                 c2.metric("Fair Value / Реална вредност (4x)", "••••••")
                 c3.metric("Optimistic / Оптимистичка вредност (5x)", "••••••")
-
 
                 premium_lock("Valuation Dashboard")
 
@@ -1785,6 +2101,7 @@ if zaklucen_file :
                 c1.metric("Conservative / Конзервативна (3x)", f"{conservative_equity:,.0f}")
                 c2.metric("Fair Value / Реална вредност (4x)", f"{fair_equity:,.0f}")
                 c3.metric("Optimistic / Оптимистичка вредност (5x)", f"{optimistic_equity:,.0f}")
+
                 st.subheader("📉 DCF Valuation / Проценка по DCF метод")
 
                 dcf_years = st.number_input(
@@ -1853,7 +2170,7 @@ if zaklucen_file :
 
         pdf_bu = export_single_pdf(bu, "Bilans na uspeh", "bilans_na_uspeh")
         st.download_button(
-    "📄 Export PDF - Bilans na uspeh",
+    "📄 Export PDF - БИЛАНС НА УСПЕХ",
     data=pdf_bu,
     file_name="bilans_na_uspeh.pdf",
     mime="application/pdf",
@@ -1862,7 +2179,7 @@ if zaklucen_file :
 
         pdf_bs = export_single_pdf(bs, "Bilans na sostojba", "bilans_na_sostojba")
         st.download_button(
-             "📄 Export PDF - Bilans na sostojba",
+             "📄 Export PDF - БИЛАНС НА СОСТОЈБА",
              data=pdf_bs,
              file_name="bilans_na_sostojba.pdf",
              mime="application/pdf",
@@ -1876,7 +2193,7 @@ if zaklucen_file :
 )
 
         st.download_button(
-             "📄 Export PDF - Seopfatna dobivka",
+             "📄 Export PDF - СЕОПФАТНА ДОБИВКА",
              data=pdf_sd,
               file_name="seopfatna_dobivka.pdf",
               mime="application/pdf",
