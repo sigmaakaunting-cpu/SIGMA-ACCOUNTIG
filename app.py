@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import re
 import ast
 from io import BytesIO
@@ -7,6 +8,94 @@ from PIL import Image
 import pdfplumber
 import os
 from datetime import datetime, timedelta
+
+APP_VERSION = "SIGMA ONLINE/LOCAL FINAL - 29.05.2026"
+
+
+def clean_number(x):
+    """
+    Универзално чистење на бројки за локално и online.
+    Поддржува:
+    - MK/EU формат: 1.234,56
+    - US формат: 1,234.56
+    - цели броеви: 1234
+    - негативни во заграда: (1.234,56)
+    """
+    if pd.isna(x):
+        return 0.0
+
+    if isinstance(x, (int, float, np.integer, np.floating)):
+        return float(x)
+
+    s = str(x).strip()
+    s = s.replace("\xa0", "").replace(" ", "")
+
+    if s.lower() in ["", "nan", "none", "-", "—"]:
+        return 0.0
+
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1]
+
+    if s.startswith("-"):
+        negative = True
+        s = s[1:]
+
+    # Ако има и точка и запирка, последниот сепаратор е децимален
+    if "." in s and "," in s:
+        if s.rfind(",") > s.rfind("."):
+            # 1.234,56 -> 1234.56
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # 1,234.56 -> 1234.56
+            s = s.replace(",", "")
+
+    elif "," in s:
+        # 1,234 или 12,345,678 = илјадарски US формат
+        if re.fullmatch(r"\d{1,3}(,\d{3})+", s):
+            s = s.replace(",", "")
+        else:
+            # 1234,56 = децимална запирка
+            s = s.replace(",", ".")
+
+    elif "." in s:
+        # 1.234 или 12.345.678 = илјадарски MK/EU формат
+        if re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
+            s = s.replace(".", "")
+        # инаку 1234.56 останува како децимална точка
+
+    try:
+        value = float(s)
+        return -value if negative else value
+    except Exception:
+        return 0.0
+
+
+def normalize_dataframe_numbers(df):
+    """
+    Оваа функција ги чисти сите колони што личат на износи.
+    Не ги допира колони како конто, опис, назив, АОП.
+    """
+
+    skip_words = [
+        "konto", "конто",
+        "opis", "опис",
+        "naziv", "назив",
+        "aop", "аоп",
+        "sifra", "шифра",
+        "ime", "име"
+    ]
+
+    for col in df.columns:
+        col_lower = str(col).lower()
+
+        if any(word in col_lower for word in skip_words):
+            continue
+
+        df[col] = df[col].apply(clean_number)
+
+    return df
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +140,11 @@ def calculate_formula(formula, values_dict):
 
 
 st.set_page_config(page_title="AOP Finansiski Izvestai", layout="wide")
+
+st.sidebar.success(APP_VERSION)
+st.sidebar.write("Pandas:", pd.__version__)
+st.sidebar.write("NumPy:", np.__version__)
+st.sidebar.write("Работна папка:", os.getcwd())
 USERS = {
     "sigma": "12345",
     "client1": "test123"
@@ -245,15 +339,6 @@ if os.path.exists(os.path.join(BASE_DIR, "data", "pravila bilansi.xlsx")):
 else:
     pravila_file = os.path.join(BASE_DIR, "pravila bilansi.xlsx")
 
-
-def clean_number(x):
-    try:
-        if pd.isna(x):
-            return 0.0
-        x = str(x).strip().replace(".", "").replace(",", ".").replace(" ", "")
-        return float(x)
-    except Exception:
-        return 0.0
 
 
 def read_excel_fill_merged(file, engine="openpyxl", sheet_name=0):
@@ -464,7 +549,7 @@ def read_zaklucen_pdf(file):
             df_words = read_zaklucen_pdf_words_format(pdf)
             if not df_words.empty and len(df_words) > 5:
                 st.info("Detektiran PDF format: zaklucen list so prazni koloni bez nuli / drug softver.")
-                return df_words
+                return normalize_dataframe_numbers(df_words)
 
         # 2) Standardni PDF varijanti po tekst-linija
         for page in pdf.pages:
@@ -526,6 +611,7 @@ def read_zaklucen_pdf(file):
                     })
 
     df = pd.DataFrame(rows)
+    
 
     if df.empty:
         st.error("PDF e procitan, no ne se pronajdeni redovi od bruto bilansot.")
@@ -582,6 +668,7 @@ def read_zaklucen(file):
         if col not in ["konto", "naziv"]:
             df[col] = df[col].apply(clean_number)
 
+    df = normalize_dataframe_numbers(df)
     return df[(df["konto"] != "") & (df["konto"] != "nan")]
 
 
@@ -1314,6 +1401,10 @@ if zaklucen_file :
 
         else:
             df = read_zaklucen(zaklucen_file)
+
+        # FINALNA SIGURNOST: sekogas ista konverzija lokalno i online
+        df = normalize_dataframe_numbers(df)
+
         st.subheader("📑 Zaklucen list")
         sum_row = {"konto": "", "naziv": "VKUPNO"}
         for col in df.columns:
