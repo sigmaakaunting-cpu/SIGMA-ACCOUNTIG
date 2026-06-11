@@ -159,8 +159,26 @@ st.markdown("""
 }
 
 /* Sidebar text default */
-[data-testid="stSidebar"] * {
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span {
     color: #e5e7eb;
+}
+
+/* Sidebar input readability fix */
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] input[type="text"],
+[data-testid="stSidebar"] input[type="number"],
+[data-testid="stSidebar"] textarea {
+    color: #111827 !important;
+    -webkit-text-fill-color: #111827 !important;
+    caret-color: #111827 !important;
+    background: #ffffff !important;
+}
+
+[data-testid="stSidebar"] input::placeholder {
+    color: #6b7280 !important;
+    -webkit-text-fill-color: #6b7280 !important;
 }
 
 /* Premium brand card */
@@ -236,8 +254,6 @@ st.markdown("""
 
 /* Inputs inside sidebar */
 [data-testid="stSidebar"] input {
-    background-color: rgba(255,255,255,0.08) !important;
-    color: #ffffff !important;
     border-radius: 10px !important;
 }
 
@@ -266,6 +282,28 @@ st.markdown("""
     line-height: 1.4;
     color: #cbd5e1;
 }
+            
+/* TextInput */
+.stTextInput input {
+    color: #111827 !important;
+    background-color: white !important;
+    -webkit-text-fill-color: #111827 !important;
+}
+
+/* NumberInput */
+.stNumberInput input {
+    color: #111827 !important;
+    background-color: white !important;
+    -webkit-text-fill-color: #111827 !important;
+}
+
+/* Sidebar specific */
+[data-testid="stSidebar"] .stTextInput input,
+[data-testid="stSidebar"] .stNumberInput input {
+    color: #111827 !important;
+    background-color: white !important;
+    -webkit-text-fill-color: #111827 !important;
+}            
 
 </style>
 """, unsafe_allow_html=True)
@@ -1423,10 +1461,90 @@ def calculate_kpi(rules_file, bu, bs, broj_vraboteni=0, meseci_rabotenje=0):
             "Kategorija": row.get("Kategorija", ""),
             "Opis": opis,
             "Status": status,
-            "Vrednost": prikaz
+            "Vrednost": prikaz,
+            "RawValue": value,
+
         })
 
     return pd.DataFrame(results)
+
+def calculate_break_even(df, bu, sales_aops, pct_402=100, pct_403=100, months_in_period=12):
+    def sum_konto_prefix(prefix):
+        konto_series = df["konto"].astype(str).str.strip()
+
+        exclude_accounts = ["4900", "4901"]
+
+        mask = (
+            konto_series.str.startswith(prefix, na=False)
+            & ~konto_series.isin(exclude_accounts)
+        )
+
+        return float(df.loc[mask, "tekovna_dolzi"].sum())
+
+    def sum_bu_aops(aops):
+        total = 0.0
+        for aop in aops:
+            aop = str(aop).strip().zfill(3)
+            total += float(
+                bu.loc[bu["AOP"].astype(str).str.zfill(3) == aop, "Iznos"].sum()
+            )
+        return total
+
+    sales_revenue = sum_bu_aops(sales_aops)
+
+    total_class_4 = sum_konto_prefix("4")
+
+    konto_400 = sum_konto_prefix("400")
+    konto_402 = sum_konto_prefix("402") * (pct_402 / 100)
+    konto_403 = sum_konto_prefix("403") * (pct_403 / 100)
+
+    variable_costs = konto_400 + konto_402 + konto_403
+    fixed_costs = total_class_4 - variable_costs
+
+    variable_ratio = variable_costs / sales_revenue if sales_revenue else 0
+    contribution_margin_ratio = 1 - variable_ratio
+
+    break_even_sales = (
+        fixed_costs / contribution_margin_ratio
+        if contribution_margin_ratio > 0
+        else 0
+    )
+
+    monthly_break_even = (
+        break_even_sales / months_in_period
+        if months_in_period > 0
+        else 0
+    )
+
+    margin_of_safety = sales_revenue - break_even_sales
+    margin_of_safety_pct = margin_of_safety / sales_revenue if sales_revenue else 0
+
+    if margin_of_safety_pct >= 0.30:
+        status = "🟢 Низок ризик"
+        comment = "Компанијата работи со добра сигурносна маргина над break-even точката."
+    elif margin_of_safety_pct >= 0.10:
+        status = "🟡 Среден ризик"
+        comment = "Компанијата е над break-even точката, но потребно е редовно следење на продажбата и трошоците."
+    else:
+        status = "🔴 Висок ризик"
+        comment = "Компанијата работи блиску до break-even точката и е чувствителна на пад на продажбата."
+
+    return pd.DataFrame([
+        {"Показател": "Приход од продажба", "Вредност": sales_revenue},
+        {"Показател": "Варијабилни трошоци", "Вредност": variable_costs},
+        {"Показател": "Фиксни трошоци", "Вредност": fixed_costs},
+        {"Показател": "Варијабилни трошоци %", "Вредност": variable_ratio},
+        {"Показател": "Маржа за покривање на фиксни трошоци", "Вредност": contribution_margin_ratio},
+        {"Показател": "Break-even продажба", "Вредност": break_even_sales},
+        {
+        "Показател": "Просечен месечен Break-even",
+        "Вредност": monthly_break_even
+        },
+        {"Показател": "Над Break-even", "Вредност": margin_of_safety},
+        {"Показател": "Безбедносна маргина %", "Вредност": margin_of_safety_pct},
+        {"Показател": "Статус", "Вредност": status},
+        {"Показател": "Коментар", "Вредност": comment},
+    ])
 
 @st.cache_data(show_spinner=False)
 def export_excel(sheets):
@@ -1897,7 +2015,10 @@ if zaklucen_file :
                 "💧 Cash Flow",
                 "📊 KPI Dashboard",
                 "🧾 Сеопфатна добивка",
-                "💎 Valuation Dashboard"
+                "💎 Valuation Dashboard",
+                "📍 Break-even Analysis",
+                "📄 CFO Snapshot"
+
             ],
             index=0,
             key="izbran_izvestaj_sidebar",
@@ -2033,6 +2154,420 @@ if zaklucen_file :
                 use_container_width=True,
                 height=700
             )
+
+        elif izbran_izvestaj == "📍 Break-even Analysis":
+            st.subheader("📍 Break-even Analysis")
+
+            with st.sidebar.expander("⚙️ Break-even параметри", expanded=False):
+                sales_aop_input = st.text_input(
+                    "AOP за приходи од продажба",
+                    value="202"
+                )
+
+                months_in_period = st.number_input(
+                    "Број на месеци во извештајот",
+                    min_value=1,
+                    max_value=12,
+                    value=12,
+                    step=1
+                )
+
+                pct_402 = st.slider(
+                    "Варијабилен дел од 402 - струја (%)",
+                    0,
+                    100,
+                    70,
+                )
+
+                pct_403 = st.slider(
+                    "Варијабилен дел од 403 - енергија (%)",
+                    0,
+                    100,
+                    70,
+                )
+
+            sales_aops = [
+                x.strip()
+                for x in sales_aop_input.split(",")
+                if x.strip() != ""
+            ]
+
+            be = calculate_break_even(
+                df=df,
+                bu=bu,
+                sales_aops=sales_aops,
+                pct_402=pct_402,
+                pct_403=pct_403,
+                months_in_period=months_in_period
+            )
+            
+            value_map = dict(zip(be["Показател"], be["Вредност"]))
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+
+            c1.metric(
+                "Приход од продажба",
+                f'{value_map.get("Приход од продажба", 0):,.0f}'
+            )
+
+            c2.metric(
+                "Break-even продажба",
+                f'{value_map.get("Break-even продажба", 0):,.0f}'
+            )
+
+            c3.metric(
+                "Над Break-even ",
+                f'{value_map.get("Над Break-even", 0):,.0f}'
+            )
+
+            c4.metric(
+                "Безбедносна маргина",
+                f'{value_map.get("Безбедносна маргина %", 0) * 100:.2f}%'
+            )
+
+            c5.metric(
+                "Месечен Break-even",
+                f'{value_map.get("Просечен месечен Break-even", 0):,.0f}'
+            )
+
+            st.subheader("📋 Детална пресметка")
+
+            #st.write(be)
+            #st.write(contribution_margin_ratio)
+            display_be = be.copy()
+
+            for i, row in display_be.iterrows():
+                pokazatel = str(row["Показател"]).strip()
+
+                if pokazatel in ["Варијабилни трошоци %", "Маржа за покривање на фиксни трошоци", "Безбедносна маргина %"]:
+                    display_be.loc[i, "Вредност"] = f'{float(row["Вредност"]) * 100:.2f}%'
+                elif pokazatel not in ["Статус", "Коментар"]:
+                    display_be.loc[i, "Вредност"] = f'{float(row["Вредност"]):,.0f}'
+            #st.write(display_be)
+            st.dataframe(display_be, use_container_width=True)
+
+            st.subheader("🧠 Автоматски коментар")
+
+            st.info(str(value_map.get("Статус", "")))
+            st.write(str(value_map.get("Коментар", "")))
+
+            st.success(
+                f"""
+            Извештајот опфаќа {months_in_period} месеци.
+
+            Компанијата треба да оствари просечна месечна продажба од
+            {value_map.get("Просечен месечен Break-even", 0):,.0f} денари
+            за да ги покрие сите трошоци.
+            """
+                        )
+            
+
+        elif izbran_izvestaj == "📄 CFO Snapshot":
+
+            st.title("📄 CFO Snapshot")
+
+            be_cfo = calculate_break_even(
+                df=df,
+                bu=bu,
+                sales_aops=["202"],
+                pct_402=70,
+                pct_403=70
+            )
+
+            be_map = dict(zip(be_cfo["Показател"], be_cfo["Вредност"]))
+
+            sales_revenue = float(be_map.get("Приход од продажба", 0))
+            break_even_sales = float(be_map.get("Break-even продажба", 0))
+            margin_of_safety = float(be_map.get("Над Break-even", 0))
+            safety_margin_pct = float(be_map.get("Безбедносна маргина %", 0))
+
+            net_profit = float(
+                bu.loc[bu["AOP"].astype(str).str.zfill(3) == "255", "Iznos"].sum()
+            )
+            net_loss = float(
+                bu.loc[bu["AOP"].astype(str).str.zfill(3) == "256", "Iznos"].sum()
+            )
+            net_result = net_profit - net_loss
+
+            def get_kpi_raw(kpi_df, naziv_contains):
+                try:
+                    match = kpi_df[
+                        kpi_df["Naziv"].astype(str).str.contains(
+                            naziv_contains,
+                            case=False,
+                            na=False
+                        )
+                    ]
+                    if match.empty:
+                        return 0.0
+                    return float(match.iloc[0].get("RawValue", 0.0))
+                except Exception:
+                    return 0.0
+
+            current_ratio = get_kpi_raw(kpi, "ТЕКОВНА ЛИКВИДНОСТ")
+            profit_margin = get_kpi_raw(kpi, "ПРОФИТНА МАРЖА")
+            debt_ratio = get_kpi_raw(kpi, "ВКУПНА ЗАДОЛЖЕНОСТ")
+
+            score = 0
+
+            if net_result > 0 and profit_margin >= 0.15:
+                score += 35
+            elif net_result > 0 and profit_margin >= 0.05:
+                score += 25
+            elif net_result > 0:
+                score += 15
+
+            if current_ratio >= 1.5:
+                score += 35
+            elif current_ratio >= 1.0:
+                score += 25
+            elif current_ratio >= 0.7:
+                score += 15
+            else:
+                score += 5
+
+            if safety_margin_pct >= 0.30:
+                score += 30
+            elif safety_margin_pct >= 0.10:
+                score += 20
+            elif safety_margin_pct > 0:
+                score += 10
+
+            if score >= 80:
+                cfo_status = "🟢 ДОБРА ФИНАНСИСКА СОСТОЈБА"
+                status_color = "#15803d"
+            elif score >= 60:
+                cfo_status = "🟡 СТАБИЛНА СОСТОЈБА СО ПОТРЕБА ОД СЛЕДЕЊЕ"
+                status_color = "#ca8a04"
+            else:
+                cfo_status = "🔴 ПОТРЕБНО Е ВНИМАНИЕ"
+                status_color = "#dc2626"
+
+            st.markdown(
+                f"""
+                <div style="
+                    text-align:center;
+                    padding:28px;
+                    border-radius:22px;
+                    background:linear-gradient(135deg,#f8fafc,#e0f2fe);
+                    border:1px solid #dbeafe;
+                    margin-bottom:24px;
+                ">
+                    <h2 style="margin:0;color:#0f172a;">🏆 SIGMA CFO SCORE</h2>
+                    <div style="font-size:64px;font-weight:800;color:#1e3a8a;margin:10px 0;">
+                        {score}/100
+                    </div>
+                    <h3 style="color:{status_color};margin:0;">
+                        {cfo_status}
+                    </h3>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            summary_lines = []
+
+            if net_result > 0:
+                summary_lines.append(
+                    f"Компанијата оствари нето добивка од {net_result:,.0f} денари."
+                )
+            else:
+                summary_lines.append(
+                    f"Компанијата оствари загуба од {abs(net_result):,.0f} денари."
+                )
+
+            if safety_margin_pct >= 0.30:
+                summary_lines.append(
+                    f"Продажбата е {safety_margin_pct*100:.2f}% над break-even точката што укажува на добра оперативна стабилност."
+                )
+            elif safety_margin_pct >= 0.10:
+                summary_lines.append(
+                    f"Продажбата е {safety_margin_pct*100:.2f}% над break-even точката и потребно е редовно следење на трошоците."
+                )
+            else:
+                summary_lines.append(
+                    f"Компанијата работи блиску до break-even точката и е чувствителна на пад на продажбата."
+                )
+
+            if current_ratio >= 1.5:
+                summary_lines.append(
+                    f"Ликвидноста е на добро ниво ({current_ratio:.2f})."
+                )
+            elif current_ratio >= 1:
+                summary_lines.append(
+                    f"Ликвидноста е прифатлива ({current_ratio:.2f}) но треба да се следи."
+                )
+            else:
+                summary_lines.append(
+                    f"Тековната ликвидност од {current_ratio:.2f} е под препорачаното ниво и бара внимание кон наплатата и обртните средства."
+                )
+
+            executive_summary = "\n\n".join(summary_lines)
+
+
+
+
+            summary_lines = []
+
+            if net_result > 0:
+                summary_lines.append(
+                    f"Компанијата оствари нето добивка од {net_result:,.0f} денари."
+                )
+            else:
+                summary_lines.append(
+                    f"Компанијата оствари загуба од {abs(net_result):,.0f} денари."
+                )
+
+            if safety_margin_pct >= 0.30:
+                summary_lines.append(
+                    f"Продажбата е {safety_margin_pct*100:.2f}% над break-even точката што укажува на добра оперативна стабилност."
+                )
+            elif safety_margin_pct >= 0.10:
+                summary_lines.append(
+                    f"Продажбата е {safety_margin_pct*100:.2f}% над break-even точката и потребно е редовно следење на трошоците."
+                )
+            else:
+                summary_lines.append(
+                    f"Компанијата работи блиску до break-even точката и е чувствителна на пад на продажбата."
+                )
+
+            if current_ratio >= 1.5:
+                summary_lines.append(
+                    f"Ликвидноста е на добро ниво ({current_ratio:.2f})."
+                )
+            elif current_ratio >= 1:
+                summary_lines.append(
+                    f"Ликвидноста е прифатлива ({current_ratio:.2f}) но треба да се следи."
+                )
+            else:
+                summary_lines.append(
+                    f"Тековната ликвидност од {current_ratio:.2f} е под препорачаното ниво и бара внимание кон наплатата и обртните средства."
+                )
+
+            executive_summary = "\n\n".join(summary_lines)
+
+            st.subheader("📌 Executive Summary")
+
+            st.success(executive_summary)
+
+            st.subheader("📊 Клучни показатели")
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+
+            c1.metric("Продажба", f"{sales_revenue:,.0f}")
+            c2.metric("Нето добивка", f"{net_result:,.0f}")
+            c3.metric("EBITDA", "-")
+            c4.metric("Break-even", f"{break_even_sales:,.0f}")
+            c5.metric("Безбедносна маргина", f"{safety_margin_pct * 100:.2f}%")
+
+            st.subheader("🎯 Break-even Snapshot")
+
+            b1, b2, b3 = st.columns(3)
+
+            b1.metric("Реална продажба", f"{sales_revenue:,.0f}")
+            b2.metric("Break-even продажба", f"{break_even_sales:,.0f}")
+            b3.metric("Над Break-even", f"{margin_of_safety:,.0f}")
+
+            st.progress(min(max(safety_margin_pct, 0), 1))
+            st.caption(f"Безбедносна маргина: {safety_margin_pct * 100:.2f}%")
+
+            st.subheader("🚦 Топ 3 CFO препораки")
+
+            st.markdown(
+                """
+                🟢 Компанијата работи профитабилно.
+
+                🟢 Оперативниот ризик е низок според Break-even анализата.
+
+                🟡 Следен фокус: анализа на залихи, наплата и обврски.
+                """
+            )
+
+            st.subheader("💧 Liquidity & Debt Snapshot")
+
+            l1, l2, l3, l4 = st.columns(4)
+
+            l1.metric(
+                "Тековна ликвидност",
+                f"{current_ratio:.2f}"
+            )
+
+            l2.metric(
+                "Вкупна задолженост",
+                f"{debt_ratio * 100:.2f}%"
+            )
+
+            quick_ratio = get_kpi_raw(
+                kpi,
+                "МОМЕНТАЛНА ЛИКВИДНОСТ"
+            )
+
+            l3.metric(
+                "Quick Ratio",
+                f"{quick_ratio:.2f}"
+            )
+
+            financial_stability = get_kpi_raw(
+                kpi,
+                "ФИНАНСИСКА СТАБИЛНОСТ"
+            )
+
+            l4.metric(
+                "Финансиска стабилност",
+                f"{financial_stability * 100 :.2f}%"
+            )
+
+            liquidity_text = []
+
+            if current_ratio < 1:
+                liquidity_text.append(
+                    "🔴 Тековната ликвидност е под препорачаното ниво."
+                )
+            else:
+                liquidity_text.append(
+                    "🟢 Ликвидноста е задоволителна."
+                )
+
+            #st.write("Debt ratio =", debt_ratio)
+            if debt_ratio > 0.80:
+                liquidity_text.append(
+                    "🔴 Задолженоста е висока и претставува финансиски ризик."
+                )
+            elif debt_ratio > 0.60:
+                liquidity_text.append(
+                    "🟠 Задолженоста е релативно висока и бара внимание."
+                )
+            elif debt_ratio > 0.40:
+                liquidity_text.append(
+                    "🟡 Задолженоста е умерена и треба да се следи."
+                )
+
+            else:
+                liquidity_text.append(
+                    "🟢 Задолженоста е на прифатливо ниво."
+                )
+
+            st.info("\n\n".join(liquidity_text))
+
+            risk_notes = []
+
+            if current_ratio < 1 and debt_ratio > 60:
+                risk_notes.append(
+                    "⚠️ Комбинацијата на ниска ликвидност и повисока задолженост претставува најзначаен финансиски ризик во моментот."
+                )
+
+            if current_ratio < 1 and safety_margin_pct > 0.30:
+                risk_notes.append(
+                    "ℹ️ И покрај слабата ликвидност, компанијата има добра оперативна сигурност преку задоволителна безбедносна маргина."
+                )
+
+            if net_result > 0 and current_ratio < 1:
+                risk_notes.append(
+                    "ℹ️ Компанијата е профитабилна, но добивката не се претвора доволно брзо во готовина."
+                )
+
+            for note in risk_notes:
+                st.warning(note)
 
         elif izbran_izvestaj == "💎 Valuation Dashboard":
             st.subheader("📈 EBITDA Valuation / ПРОЦЕНКА")
