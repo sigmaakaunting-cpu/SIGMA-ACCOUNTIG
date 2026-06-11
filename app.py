@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 
 APP_VERSION = "SIGMA PREMIUM SIDEBAR - 30.05.2026"
-
+# VERSION 11-06-2026
 
 def clean_number(x):
     """
