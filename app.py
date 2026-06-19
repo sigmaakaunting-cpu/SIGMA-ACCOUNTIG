@@ -325,7 +325,8 @@ with st.sidebar.expander("🔎 System info", expanded=False):
     st.write("Работна папка:", os.getcwd())
 USERS = {
     "sigma": "12345",
-    "client1": "test123"
+    "client1": "test123",
+    "client2": "test123"
 }
 
 
@@ -482,7 +483,7 @@ st.markdown("""
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 078/229-057   
             - 🏠 Адреса: ул. 121 3-1 Тетово
-            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
+            - 🌐 https://sigma-accounting.onrender.com
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
