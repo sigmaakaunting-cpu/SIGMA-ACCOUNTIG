@@ -9,8 +9,8 @@ import pdfplumber
 import os
 from datetime import datetime, timedelta
 
-APP_VERSION = "SIGMA PREMIUM SIDEBAR - 30.05.2026"
-# VERSION 11-06-2026
+APP_VERSION = "SIGMA STABLE + CFMA FIX - 19.06.2026"
+
 
 def clean_number(x):
     """
@@ -683,7 +683,7 @@ def read_zaklucen_pdf_words_format(pdf):
 
             first = ws[0]["text"].strip()
             # gi zemame samo sintetski/analiticki konta, ne grupni zbirni redovi 0,1,2... i Vкупно
-            if not re.match(r"^\d{3,6}$", first):
+            if not re.fullmatch(r"^\d{6}$", first):
                 continue
 
             konto = first
@@ -712,90 +712,420 @@ def read_zaklucen_pdf_words_format(pdf):
     return pd.DataFrame(rows)
 
 
-def read_zaklucen_pdf(file):
-    st.success("PDF uspešno učitan. Počnuvam so ekstrakcija na podatoci...")
 
+# =====================================================
+# PDF PARSERS: IVA SOFT и CFMA / Info Biro
+# Додадени како посебни parser-и за да не се расипе старата логика.
+# =====================================================
+
+def read_pdf_ivasoft_format(pdf):
+    """
+    IVA SOFT / BBILANS формат.
+
+    Важно:
+    - Кај IVA SOFT ги земаме само аналитичките 6-цифрени конта.
+    - Синтетичките 3-цифрени редови ги прескокнуваме.
+    - Овој PDF визуелно има бројки малку под конто редот, затоа редот се
+      составува по anchor-конто и X-позиции, а не само по ист top/y ред.
+    - САЛДО е една signed колона: + во krajno_dolzi, - во krajno_pobaruva.
+    """
+    rows = []
+    num_re = re.compile(_pdf_number_pattern())
+
+    col_centers = [196, 295, 394, 493, 592, 691, 790]
+    col_names = [
+        "prethodna_dolzi", "prethodna_pobaruva",
+        "tekovna_dolzi", "tekovna_pobaruva",
+        "vkupno_dolzi", "vkupno_pobaruva",
+        "saldo"
+    ]
+
+    for page in pdf.pages:
+        words = page.extract_words(
+            x_tolerance=2,
+            y_tolerance=3,
+            keep_blank_chars=False
+        )
+
+        if not words:
+            continue
+
+        words = sorted(words, key=lambda w: (w.get("top", 0), w.get("x0", 0)))
+
+        # Anchor редови = зборови во првата колона кои се конта.
+        # Ги земаме само 6-цифрените конта, а 3-цифрените синтетики ги игнорираме.
+        account_anchors = []
+        for w in words:
+            txt = str(w.get("text", "")).strip()
+            x0 = float(w.get("x0", 0))
+            if x0 < 70 and re.fullmatch(r"\d{3,6}", txt):
+                account_anchors.append(w)
+
+        for i, acc in enumerate(account_anchors):
+            konto = str(acc.get("text", "")).strip()
+
+            # IVA SOFT: аналитиката е 6 цифри, синтетиката е 3 цифри.
+            if not re.fullmatch(r"\d{6}", konto):
+                continue
+
+            top_start = float(acc.get("top", 0)) - 2
+
+            # До следното конто-редче. Така ги фаќаме и бројките кои се
+            # 3-5 пиксели под конто редот, но не влегуваме во следната сметка.
+            if i + 1 < len(account_anchors):
+                top_end = float(account_anchors[i + 1].get("top", 0)) - 1
+            else:
+                top_end = float(acc.get("bottom", acc.get("top", 0))) + 18
+
+            row_words = [
+                w for w in words
+                if top_start <= float(w.get("top", 0)) < top_end
+            ]
+
+            values = {c: 0.0 for c in col_names}
+            text_words = []
+
+            for w in row_words:
+                txt = str(w.get("text", "")).strip()
+
+                if txt == konto:
+                    continue
+
+                center = (float(w.get("x0", 0)) + float(w.get("x1", 0))) / 2
+
+                # Бројки ги земаме само од бројчените колони.
+                # Ова спречува опис како "TIP 40.10" да се прочита како износ.
+                if center > 140 and num_re.fullmatch(txt):
+                    idx = min(
+                        range(len(col_centers)),
+                        key=lambda j: abs(center - col_centers[j])
+                    )
+                    values[col_names[idx]] += pdf_number(txt)
+
+                # Описот е меѓу конто колоната и првата бројчена колона.
+                elif 45 <= float(w.get("x0", 0)) < 170:
+                    text_words.append(txt)
+
+            if sum(abs(v) for v in values.values()) == 0:
+                continue
+
+            saldo = values.pop("saldo")
+            krajno_dolzi, krajno_pobaruva = split_signed_saldo(saldo)
+
+            rows.append({
+                "konto": konto,
+                "naziv": " ".join(text_words).strip(),
+                "prethodna_dolzi": values["prethodna_dolzi"],
+                "prethodna_pobaruva": values["prethodna_pobaruva"],
+                "tekovna_dolzi": values["tekovna_dolzi"],
+                "tekovna_pobaruva": values["tekovna_pobaruva"],
+                "vkupno_dolzi": values["vkupno_dolzi"],
+                "vkupno_pobaruva": values["vkupno_pobaruva"],
+                "krajno_dolzi": krajno_dolzi,
+                "krajno_pobaruva": krajno_pobaruva,
+            })
+
+    return normalize_dataframe_numbers(pd.DataFrame(rows))
+
+
+def read_pdf_cfma_infobiro_format(pdf):
+    """
+    CFMA / Info Biro BRUTO BILANS формат.
+
+    Ги чита 3-цифрените синтетички редови бидејќи тие се најстабилни
+    за AOP пресметки и не создаваат дуплирање со аналитиките.
+    """
+    rows = []
+    num_re = re.compile(_pdf_number_pattern())
+
+    col_centers = [276, 344, 414, 482, 552, 620, 690, 758]
+    col_names = [
+        "prethodna_dolzi", "prethodna_pobaruva",
+        "tekovna_dolzi", "tekovna_pobaruva",
+        "vkupno_dolzi", "vkupno_pobaruva",
+        "krajno_dolzi", "krajno_pobaruva",
+    ]
+
+    for page in pdf.pages:
+        words = page.extract_words(
+            x_tolerance=2,
+            y_tolerance=3,
+            keep_blank_chars=False
+        )
+
+        lines = {}
+        for w in words:
+            top = round(w.get("top", 0))
+            lines.setdefault(top, []).append(w)
+
+        for top in sorted(lines):
+            ws = sorted(lines[top], key=lambda w: w["x0"])
+            if not ws:
+                continue
+
+            first = ws[0]["text"].strip()
+
+            #if first in ["701", "740"]:
+                #st.write("KONTO", first)
+             #   for w in ws:
+              #      st.write(w["text"], round(w["x0"], 1), round(w["x1"], 1))
+
+            # CFMA: ги земаме синтетичките 3-цифрени редови
+            if not re.fullmatch(r"\d{3}", first):
+                continue
+
+            # Кај CFMA конто колоната е лево
+            if ws[0].get("x0", 0) > 60:
+                continue
+
+            values = {c: 0.0 for c in col_names}
+            text_words = []
+
+            for w in ws[1:]:
+                txt = w["text"].strip()
+                if num_re.fullmatch(txt):
+                    center = (w["x0"] + w["x1"]) / 2
+                    idx = min(
+                        range(len(col_centers)),
+                        key=lambda i: abs(center - col_centers[i])
+                    )
+                    values[col_names[idx]] += pdf_number(txt)
+                elif w.get("x0", 0) < 240:
+                    text_words.append(txt)
+
+            if sum(abs(v) for v in values.values()) == 0:
+                continue
+
+            # CFMA FIX: nekoi krajnite salda vo PDF se malku pomesteni po Y
+            # i ne sekogash se grupiraat vo ist red. Ako krajno saldo ne e
+            # procitano, go presmetuvame od vkupno dolzi - vkupno pobaruva.
+            if values["krajno_dolzi"] == 0 and values["krajno_pobaruva"] == 0:
+                saldo = values["vkupno_dolzi"] - values["vkupno_pobaruva"]
+                if saldo > 0:
+                    values["krajno_dolzi"] = saldo
+                elif saldo < 0:
+                    values["krajno_pobaruva"] = abs(saldo)
+
+            rows.append({
+                "konto": first,
+                "naziv": " ".join(text_words).strip(),
+                **values
+            })
+
+    return normalize_dataframe_numbers(pd.DataFrame(rows))
+
+def _pdf_balance_diff(df):
+    """
+    Pomoshna kontrola za izbor na najdobar PDF parser.
+    Kolku e pomal zbirniot debet/kredit diff, tolku e parserot posiguren.
+    """
+    if df is None or df.empty:
+        return float("inf")
+
+    required_cols = [
+        "prethodna_dolzi", "prethodna_pobaruva",
+        "tekovna_dolzi", "tekovna_pobaruva",
+        "vkupno_dolzi", "vkupno_pobaruva",
+        "krajno_dolzi", "krajno_pobaruva"
+    ]
+    
+    if not all(c in df.columns for c in required_cols):
+        return float("inf")
+
+    diff = 0.0
+    pairs = [
+        ("prethodna_dolzi", "prethodna_pobaruva"),
+        ("tekovna_dolzi", "tekovna_pobaruva"),
+        ("vkupno_dolzi", "vkupno_pobaruva"),
+        ("krajno_dolzi", "krajno_pobaruva"),
+    ]
+    
+    for d_col, p_col in pairs:
+        d = float(df[d_col].sum())
+        p = float(df[p_col].sum())
+        diff += abs(round(d - p, 2))
+
+    return diff
+
+
+def _pdf_parser_score(df, priority):
+    """
+    Score za avtomatski izbor:
+    1) prvo balansirana struktura,
+    2) potoa povekje procitani redovi,
+    3) potoa prioritet na parser.
+    """
+    if df is None or df.empty or len(df) <= 5:
+        return (-1, float("inf"), 0, -priority)
+
+    balance_diff = _pdf_balance_diff(df)
+    is_balanced = 1 if balance_diff <= 1.0 else 0
+
+    return (is_balanced, -balance_diff, len(df), -priority)
+
+
+def read_zaklucen_pdf_standard_lines(pdf):
+    """
+    Standarden parser po tekst-linija.
+    Go koristime kako kandidat, a ne kako posledna opcija,
+    za da ne se pogreshat stari Zonel bruto bilansi kako IVA SOFT.
+    """
     rows = []
     number_pattern = _pdf_number_pattern()
 
+    for page in pdf.pages:
+        text = page.extract_text()
+
+        if not text:
+            continue
+
+        for line in text.split("\n"):
+            line = line.strip()
+            nums = re.findall(number_pattern, line)
+
+            # Standarden PDF: pocetna D/P + tekovna D/P + vkupno D/P + krajno D/P = 8 brojki
+            # Obicen PDF: pocetna saldo + tekovna D/P + vkupno D/P + krajno saldo = 6 brojki
+            if len(nums) >= 8 or len(nums) == 6:
+
+                first_num = re.search(number_pattern, line)
+                if not first_num:
+                    continue
+
+                left_part = line[:first_num.start()].strip()
+                konto, naziv = extract_pdf_konto_naziv(left_part)
+
+                if not konto:
+                    continue
+
+                if len(nums) >= 8:
+                    prethodna_dolzi = pdf_number(nums[0])
+                    prethodna_pobaruva = pdf_number(nums[1])
+                    tekovna_dolzi = pdf_number(nums[2])
+                    tekovna_pobaruva = pdf_number(nums[3])
+                    vkupno_dolzi = pdf_number(nums[4])
+                    vkupno_pobaruva = pdf_number(nums[5])
+                    krajno_dolzi = pdf_number(nums[6])
+                    krajno_pobaruva = pdf_number(nums[7])
+                else:
+                    # Format so pocetno i krajno saldo vo edna kolona
+                    prethodna_dolzi, prethodna_pobaruva = split_signed_saldo(nums[0])
+                    tekovna_dolzi = pdf_number(nums[1])
+                    tekovna_pobaruva = pdf_number(nums[2])
+                    vkupno_dolzi = pdf_number(nums[3])
+                    vkupno_pobaruva = pdf_number(nums[4])
+                    krajno_dolzi, krajno_pobaruva = split_signed_saldo(nums[5])
+
+                rows.append({
+                    "konto": konto,
+                    "naziv": naziv,
+                    "prethodna_dolzi": prethodna_dolzi,
+                    "prethodna_pobaruva": prethodna_pobaruva,
+                    "tekovna_dolzi": tekovna_dolzi,
+                    "tekovna_pobaruva": tekovna_pobaruva,
+                    "vkupno_dolzi": vkupno_dolzi,
+                    "vkupno_pobaruva": vkupno_pobaruva,
+                    "krajno_dolzi": krajno_dolzi,
+                    "krajno_pobaruva": krajno_pobaruva
+                })
+
+    return normalize_dataframe_numbers(pd.DataFrame(rows))
+
+
+def read_zaklucen_pdf(file):
+    st.success("PDF uspešno učitan. Počnuvam so ekstrakcija na podatoci...")
+
     with pdfplumber.open(file) as pdf:
 
-        # 1) Prvo specijalen parser za PDF so koloni po X-pozicija
-        #    Potreben e za formati kade sto praznite nuli ne se pecatat.
         text_all = "\n".join([p.extract_text() or "" for p in pdf.pages])
-        if "ZAKLU" in text_all.upper() and "SALDO" in text_all.upper() and "TEKOV" in text_all.upper():
+        text_upper = text_all.upper()
+
+        # Posebno pravilo samo za CFMA / Info Biro ZAKLUCEN LIST.
+        # Go vrakjame direktno za da ne pobedi STANDARD/ZONEL parser-ot.
+        is_cfma_zaklucen = (
+            "ZAKLU" in text_upper
+            and "KONTO" in text_upper
+            and "SALDO" in text_upper
+            and "TEKOV" in text_upper
+            and "VKUP" in text_upper
+        )
+
+        if is_cfma_zaklucen:
+            df_cfma = read_pdf_cfma_infobiro_format(pdf)
+            if not df_cfma.empty and len(df_cfma) > 20:
+                best_df = normalize_dataframe_numbers(df_cfma)
+                balance_diff = _pdf_balance_diff(best_df)
+                st.info(
+                    f"Detektiran PDF format: CFMA / Info Biro ZAKLUCEN LIST "
+                    f"(redovi: {len(best_df)}, kontrolna razlika: {balance_diff:,.2f})."
+                )
+                return best_df
+
+        candidates = []
+
+        # 1) STANDARD parser prvo kako kandidat.
+        # Ova e bitno za starite Zonel bruto bilansi koi vo naslov mozat da imaat "BRUTO BILANS",
+        # no strukturata im e klasicna so 8 debet/kredit koloni.
+        df_standard = read_zaklucen_pdf_standard_lines(pdf)
+        if not df_standard.empty and len(df_standard) > 5:
+            candidates.append({
+                "name": "STANDARD / ZONEL struktura",
+                "df": df_standard,
+                "priority": 1
+            })
+
+        # 2) Parser po X-pozicii za format kade praznite nuli ne se pecatat.
+        # Go probuvame spored struktura/tekst, no izborot pak go pravi score-ot.
+        if "ZAKLU" in text_upper and "SALDO" in text_upper and "TEKOV" in text_upper:
             df_words = read_zaklucen_pdf_words_format(pdf)
             if not df_words.empty and len(df_words) > 5:
-                st.info("Detektiran PDF format: zaklucen list so prazni koloni bez nuli / drug softver.")
-                return normalize_dataframe_numbers(df_words)
+                candidates.append({
+                    "name": "Zaklucen list so prazni koloni bez nuli / X-pozicii",
+                    "df": df_words,
+                    "priority": 2
+                })
 
-        # 2) Standardni PDF varijanti po tekst-linija
-        for page in pdf.pages:
+        # 3) CFMA / Info Biro kandidat.
+        if "BRUTO BILANS" in text_upper and ("KONTO" in text_upper or "PURE" in text_upper):
+            df_cfma = read_pdf_cfma_infobiro_format(pdf)
+            if not df_cfma.empty and len(df_cfma) > 5:
+                candidates.append({
+                    "name": "CFMA / Info Biro BRUTO BILANS",
+                    "df": df_cfma,
+                    "priority": 3
+                })
 
-            text = page.extract_text()
+        # 4) IVA SOFT kandidat.
+        # Vazno: ne go vrakjame avtomatski samo zatoa shto vo tekstot pisuva "БРУТОБИЛАНС".
+        # Prvo go sporeduvame so standardniot parser po realna struktura i kontrola.
+        if "БРУТОБИЛАНС" in text_upper or "БРУТО БИЛАНС" in text_upper:
+            df_iva = read_pdf_ivasoft_format(pdf)
+            if not df_iva.empty and len(df_iva) > 5:
+                candidates.append({
+                    "name": "IVA SOFT / BBILANS",
+                    "df": df_iva,
+                    "priority": 4
+                })
 
-            if not text:
-                continue
+        if candidates:
+            best = sorted(
+                candidates,
+                key=lambda c: _pdf_parser_score(c["df"], c["priority"]),
+                reverse=True
+            )[0]
 
-            for line in text.split("\n"):
+            best_df = normalize_dataframe_numbers(best["df"])
+            balance_diff = _pdf_balance_diff(best_df)
 
-                line = line.strip()
+            st.info(
+                f"Detektiran PDF format: {best['name']} "
+                f"(redovi: {len(best_df)}, kontrolna razlika: {balance_diff:,.2f})."
+            )
 
-                nums = re.findall(number_pattern, line)
+            return best_df
 
-                # Standarden PDF: pocetna D/P + tekovna D/P + vkupno D/P + krajno D/P = 8 brojki
-                # Obicen PDF: pocetna saldo + tekovna D/P + vkupno D/P + krajno saldo = 6 brojki
-                if len(nums) >= 8 or len(nums) == 6:
+    st.error("PDF e procitan, no ne se pronajdeni redovi od bruto bilansot.")
+    st.stop()
 
-                    first_num = re.search(number_pattern, line)
-                    if not first_num:
-                        continue
-
-                    left_part = line[:first_num.start()].strip()
-                    konto, naziv = extract_pdf_konto_naziv(left_part)
-
-                    if not konto:
-                        continue
-
-                    if len(nums) >= 8:
-                        prethodna_dolzi = pdf_number(nums[0])
-                        prethodna_pobaruva = pdf_number(nums[1])
-                        tekovna_dolzi = pdf_number(nums[2])
-                        tekovna_pobaruva = pdf_number(nums[3])
-                        vkupno_dolzi = pdf_number(nums[4])
-                        vkupno_pobaruva = pdf_number(nums[5])
-                        krajno_dolzi = pdf_number(nums[6])
-                        krajno_pobaruva = pdf_number(nums[7])
-                    else:
-                        # Format so pocetno i krajno saldo vo edna kolona
-                        prethodna_dolzi, prethodna_pobaruva = split_signed_saldo(nums[0])
-                        tekovna_dolzi = pdf_number(nums[1])
-                        tekovna_pobaruva = pdf_number(nums[2])
-                        vkupno_dolzi = pdf_number(nums[3])
-                        vkupno_pobaruva = pdf_number(nums[4])
-                        krajno_dolzi, krajno_pobaruva = split_signed_saldo(nums[5])
-
-                    rows.append({
-                        "konto": konto,
-                        "naziv": naziv,
-                        "prethodna_dolzi": prethodna_dolzi,
-                        "prethodna_pobaruva": prethodna_pobaruva,
-                        "tekovna_dolzi": tekovna_dolzi,
-                        "tekovna_pobaruva": tekovna_pobaruva,
-                        "vkupno_dolzi": vkupno_dolzi,
-                        "vkupno_pobaruva": vkupno_pobaruva,
-                        "krajno_dolzi": krajno_dolzi,
-                        "krajno_pobaruva": krajno_pobaruva
-                    })
-
-    df = pd.DataFrame(rows)
-    
-
-    if df.empty:
-        st.error("PDF e procitan, no ne se pronajdeni redovi od bruto bilansot.")
-        st.stop()
-
-    return df
 
 def read_zaklucen(file):
     engine = "xlrd" if file.name.lower().endswith(".xls") else "openpyxl"
@@ -995,6 +1325,7 @@ def apply_formulas_and_logic(rules, values, external_values=None):
             formula = row.get("Formula", "")
             if pd.isna(formula) or str(formula).strip() == "":
                 continue
+
 
             try:
                 expression = replace_formula_tokens(formula, values, external_values)
@@ -1207,12 +1538,15 @@ def calculate_bilans_sostojba(df, rules_file, bu=None):
             order.append(aop)
         positions[aop] = row.get("Pozicija", "")
 
+                
         current_val = sum_rule(
             df,
             row.get("konto", None),
             row.get("kolona", None),
             row.get("Operacija", "+")
         )
+
+            
 
         previous_val = sum_rule(
             df,
@@ -1468,7 +1802,7 @@ def calculate_kpi(rules_file, bu, bs, broj_vraboteni=0, meseci_rabotenje=0):
 
     return pd.DataFrame(results)
 
-def calculate_break_even(df, bu, sales_aops, pct_402=100, pct_403=100, months_in_period=12):
+def calculate_break_even(df, bu, sales_aops, pct_402=70, pct_403=70, months_in_period=12):
     def sum_konto_prefix(prefix):
         konto_series = df["konto"].astype(str).str.strip()
 
