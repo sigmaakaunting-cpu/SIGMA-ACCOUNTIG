@@ -491,8 +491,8 @@ st.markdown("""
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 078/229-057   
             - 🏠 Адреса: ул. 121 3-1 Тетово
-            - 🌐 https://sigma-accountig.onrender.com
-            - 🌏 SIGMA Accounting 
+            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
+            🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
     background-color: #f8f9fa;
@@ -3633,6 +3633,458 @@ def build_rule_trace(df, rules_file, sheet_name, year_mode="current"):
 # END SIGMA STABLE ENGINE OVERRIDES
 # =====================================================
 
+
+# =====================================================
+# SIGMA v9 FIXES:
+# 1) Shared synthetic fallback is consumed once per BU/BS calculation
+#    (2340 + 2341 no longer duplicate parent 234 when only 234 exists).
+# 2) Synthetic 019 is NOT used as fallback for 0191/0192/0193 rules;
+#    when only 019 exists, it is allocated proportionally across fixed assets.
+# =====================================================
+
+def _is_analytic_019_prefix(prefix):
+    prefix = normalize_rule_prefix(prefix)
+    return bool(re.fullmatch(r"019\d+", prefix)) and prefix != "019"
+
+
+def _fallback_key(parent, col):
+    return (str(parent), str(col).strip() if col is not None else "")
+
+
+def _matching_effective_indices_v9(df, prefixes, kolona=None, tolerance=1.0, used_fallback_parents=None):
+    if df is None or df.empty or "konto" not in df.columns:
+        return []
+
+    prefixes = [normalize_rule_prefix(p) for p in prefixes]
+    prefixes = [p for p in prefixes if p]
+    if not prefixes:
+        return []
+
+    konta_norm = df["konto"].astype(str).apply(normalize_konto)
+    selected = []
+
+    col = str(kolona).strip() if kolona is not None and not pd.isna(kolona) else None
+    has_col = bool(col and col in df.columns)
+
+    if used_fallback_parents is None:
+        used_fallback_parents = set()
+
+    for prefix in prefixes:
+        match_mask = konta_norm.apply(lambda k: str(k).startswith(prefix))
+        match_idxs = list(df.index[match_mask])
+
+        if not match_idxs:
+            fallback_idxs, fallback_parent = _find_existing_synthetic_parent(konta_norm, prefix)
+
+            # IMPORTANT: never map analytic 0191/0192/0193 rules to synthetic 019.
+            # If only synthetic 019 exists, raspredeli_019_proporcionalno handles it once.
+            if fallback_idxs and _is_analytic_019_prefix(prefix) and str(fallback_parent) == "019":
+                continue
+
+            if fallback_idxs:
+                key = _fallback_key(fallback_parent, col)
+                if key in used_fallback_parents:
+                    continue
+                used_fallback_parents.add(key)
+
+                for fallback_idx in fallback_idxs:
+                    if fallback_idx not in selected:
+                        selected.append(fallback_idx)
+            continue
+
+        match_idxs = sorted(
+            match_idxs,
+            key=lambda idx: (len(str(konta_norm.loc[idx])), str(konta_norm.loc[idx]))
+        )
+
+        for idx in match_idxs:
+            child_idxs = _immediate_child_indices(konta_norm, idx, match_idxs)
+
+            if not child_idxs:
+                if idx not in selected:
+                    selected.append(idx)
+                continue
+
+            if not has_col:
+                continue
+
+            parent_value = float(df.loc[[idx], col].apply(clean_number).sum())
+            children_value = float(df.loc[child_idxs, col].apply(clean_number).sum())
+
+            parent_is_subtotal = (
+                abs(parent_value - children_value) <= tolerance
+                and abs(children_value) > tolerance
+            )
+
+            parent_empty_children_have_value = (
+                abs(parent_value) <= tolerance
+                and abs(children_value) > tolerance
+            )
+
+            if parent_is_subtotal or parent_empty_children_have_value:
+                continue
+
+            if idx not in selected:
+                selected.append(idx)
+
+    return selected
+
+
+def _matching_effective_details_v9(df, prefixes, kolona=None, tolerance=1.0, used_fallback_parents=None):
+    if df is None or df.empty or "konto" not in df.columns:
+        return [], [], []
+
+    prefixes = [normalize_rule_prefix(p) for p in prefixes]
+    prefixes = [p for p in prefixes if p]
+    if not prefixes:
+        return [], [], []
+
+    konta_norm = df["konto"].astype(str).apply(normalize_konto)
+    selected, excluded, notes = [], [], []
+
+    col = str(kolona).strip() if kolona is not None and not pd.isna(kolona) else None
+    has_col = bool(col and col in df.columns)
+
+    if used_fallback_parents is None:
+        used_fallback_parents = set()
+
+    for prefix in prefixes:
+        match_mask = konta_norm.apply(lambda k: str(k).startswith(prefix))
+        match_idxs = list(df.index[match_mask])
+
+        if not match_idxs:
+            fallback_idxs, fallback_parent = _find_existing_synthetic_parent(konta_norm, prefix)
+
+            if fallback_idxs and _is_analytic_019_prefix(prefix) and str(fallback_parent) == "019":
+                notes.append(
+                    f"{prefix}: постои само синтетика 019 -> не се зема како директен fallback; "
+                    "се распределува пропорционално еднаш"
+                )
+                continue
+
+            if fallback_idxs:
+                key = _fallback_key(fallback_parent, col)
+                if key in used_fallback_parents:
+                    notes.append(
+                        f"{prefix}: синтетика {fallback_parent} веќе е земена во претходно правило -> нема дуплирање"
+                    )
+                    continue
+
+                used_fallback_parents.add(key)
+                for fallback_idx in fallback_idxs:
+                    if fallback_idx not in selected:
+                        selected.append(fallback_idx)
+                notes.append(
+                    f"{prefix}: нема аналитика во документот -> земена синтетика {fallback_parent}"
+                )
+            else:
+                notes.append(f"{prefix}: нема погодени конта")
+            continue
+
+        match_idxs = sorted(
+            match_idxs,
+            key=lambda idx: (len(str(konta_norm.loc[idx])), str(konta_norm.loc[idx]))
+        )
+
+        for idx in match_idxs:
+            konto = str(konta_norm.loc[idx])
+            child_idxs = _immediate_child_indices(konta_norm, idx, match_idxs)
+
+            if not child_idxs:
+                if idx not in selected:
+                    selected.append(idx)
+                continue
+
+            if not has_col:
+                if idx not in excluded:
+                    excluded.append(idx)
+                notes.append(f"{konto}: има аналитика -> синтетиката е исклучена")
+                continue
+
+            parent_value = float(df.loc[[idx], col].apply(clean_number).sum())
+            children_value = float(df.loc[child_idxs, col].apply(clean_number).sum())
+
+            parent_is_subtotal = (
+                abs(parent_value - children_value) <= tolerance
+                and abs(children_value) > tolerance
+            )
+            parent_empty_children_have_value = (
+                abs(parent_value) <= tolerance
+                and abs(children_value) > tolerance
+            )
+
+            if parent_is_subtotal:
+                if idx not in excluded:
+                    excluded.append(idx)
+                notes.append(f"{konto}: синтетика=subtotal -> земени аналитики")
+                continue
+
+            if parent_empty_children_have_value:
+                if idx not in excluded:
+                    excluded.append(idx)
+                notes.append(f"{konto}: синтетика=0 -> земени аналитики")
+                continue
+
+            if idx not in selected:
+                selected.append(idx)
+            notes.append(f"{konto}: директно книжење + аналитики -> земени и двете")
+
+    return selected, excluded, notes
+
+
+def sum_rule_effective_context(df, konto_text, kolona, operacija, used_fallback_parents=None):
+    if pd.isna(konto_text) or pd.isna(kolona):
+        return 0.0
+
+    kolona = str(kolona).strip()
+    if kolona not in df.columns:
+        return 0.0
+
+    prefixes = [normalize_rule_prefix(x) for x in konto_list(konto_text)]
+    prefixes = [x for x in prefixes if x]
+    if not prefixes:
+        return 0.0
+
+    idxs = _matching_effective_indices_v9(
+        df,
+        prefixes,
+        kolona=kolona,
+        used_fallback_parents=used_fallback_parents
+    )
+    if not idxs:
+        return 0.0
+
+    value = float(df.loc[idxs, kolona].apply(clean_number).sum())
+    return -value if str(operacija).strip() == "-" else value
+
+
+# Contextless fallback for modules that call the old name directly.
+def sum_rule_effective(df, konto_text, kolona, operacija):
+    return sum_rule_effective_context(df, konto_text, kolona, operacija, used_fallback_parents=None)
+
+
+def sum_rule(df, konto_text, kolona, operacija):
+    return sum_rule_effective(df, konto_text, kolona, operacija)
+
+
+def sum_rule_prefix_all(df, konto_text, kolona, operacija):
+    return sum_rule_effective(df, konto_text, kolona, operacija)
+
+
+def sum_rule_smart_prefix(df, konto_text, kolona, operacija):
+    return sum_rule_effective(df, konto_text, kolona, operacija)
+
+
+def raspredeli_019_proporcionalno(df, values, kolona_019, kolona_bruto):
+    """
+    v9: Ако има само синтетика 019, не ја доделуваме целата на едно AOP.
+    Ја распределуваме пропорционално по бруто вредност на средствата.
+    Ако постојат аналитики 0191/0192/0193..., НЕ правиме распределба,
+    бидејќи правилата веќе точно ја носат амортизацијата.
+    """
+    if not ima_zbirno_019(df):
+        return values
+
+    if ima_analitika_019(df):
+        return values
+
+    iznos_019 = abs(suma_konto_019_exact(df, "019", kolona_019))
+    if iznos_019 == 0:
+        return values
+
+    # AOP групи што може да носат амортизација кога имаме само збирно 019.
+    # Земјиште/аванси/подготовка не ги вклучуваме во базата.
+    depreciable_aops = ["004", "012", "013", "014", "015", "016", "019"]
+
+    bruto_values = {}
+    vkupno_bruto = 0.0
+
+    for aop in depreciable_aops:
+        bruto = float(values.get(aop, 0.0))
+        if bruto > 0:
+            bruto_values[aop] = bruto
+            vkupno_bruto += bruto
+
+    if vkupno_bruto == 0:
+        return values
+
+    for aop, bruto in bruto_values.items():
+        del_od_019 = iznos_019 * (bruto / vkupno_bruto)
+        values[aop] = values.get(aop, 0.0) - del_od_019
+
+    return values
+
+
+def calculate_bilans_uspeh(df, rules_file):
+    """v9: BU со context-aware fallback: 234 не се дуплира за 2340 и 2341."""
+    rules = read_rules(rules_file, "Pravila Bilans Uspeh")
+    values, positions, order = {}, {}, []
+    used_fallback_parents = set()
+
+    for _, row in rules.iterrows():
+        aop = format_aop(row["AOP"])
+        if aop not in order:
+            order.append(aop)
+        positions[aop] = row.get("Pozicija", "")
+
+        val = sum_rule_effective_context(
+            df,
+            row.get("konto", None),
+            row.get("kolona", None),
+            row.get("Operacija", "+"),
+            used_fallback_parents=used_fallback_parents
+        )
+        values[aop] = values.get(aop, 0.0) + val
+
+    values = apply_formulas_and_logic(rules, values)
+
+    return pd.DataFrame([
+        {"AOP": aop, "Pozicija": positions.get(aop, ""), "Iznos": values.get(aop, 0.0)}
+        for aop in order
+    ])
+
+
+def calculate_bilans_sostojba(df, rules_file, bu=None):
+    """v9: BS со context-aware fallback + исправена 019 пропорционална распределба."""
+    rules = read_rules(rules_file, "Pravila bilans Sostojba")
+    current_values, previous_values, positions, order = {}, {}, {}, []
+    current_used_fallbacks = set()
+    previous_used_fallbacks = set()
+
+    bu_current_map = {}
+    if bu is not None:
+        for _, bu_row in bu.iterrows():
+            bu_aop = str(bu_row["AOP"]).strip().replace(".0", "").zfill(3)
+            bu_current_map[f"BU{bu_aop}"] = float(bu_row["Iznos"])
+
+    for _, row in rules.iterrows():
+        aop = format_aop(row["AOP"])
+        if aop not in order:
+            order.append(aop)
+        positions[aop] = row.get("Pozicija", "")
+
+        current_val = sum_rule_effective_context(
+            df,
+            row.get("konto", None),
+            row.get("kolona", None),
+            row.get("Operacija", "+"),
+            used_fallback_parents=current_used_fallbacks
+        )
+
+        previous_val = sum_rule_effective_context(
+            df,
+            row.get("konto_prethodna", row.get("konto", None)),
+            row.get("kolona_prethodna", None),
+            row.get("Operacija_prethodna", row.get("Operacija", "+")),
+            used_fallback_parents=previous_used_fallbacks
+        )
+
+        current_values[aop] = current_values.get(aop, 0.0) + current_val
+        previous_values[aop] = previous_values.get(aop, 0.0) + previous_val
+
+    if bu is not None:
+        current_values["077"] = bu_current_map.get("BU255", 0.0)
+        current_values["078"] = bu_current_map.get("BU256", 0.0)
+
+    current_values = raspredeli_019_proporcionalno(df, current_values, "krajno_pobaruva", "krajno_dolzi")
+    current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
+
+    if bu is not None:
+        current_values["077"] = bu_current_map.get("BU255", 0.0)
+        current_values["078"] = bu_current_map.get("BU256", 0.0)
+        current_values = apply_formulas_and_logic(rules, current_values, external_values=bu_current_map)
+        current_values["077"] = bu_current_map.get("BU255", 0.0)
+        current_values["078"] = bu_current_map.get("BU256", 0.0)
+
+    previous_values = raspredeli_019_proporcionalno(df, previous_values, "prethodna_pobaruva", "prethodna_dolzi")
+    previous_values = apply_formulas_and_logic(rules, previous_values)
+
+    return pd.DataFrame([
+        {
+            "AOP": aop,
+            "Pozicija": positions.get(aop, ""),
+            "Tekovna godina": current_values.get(aop, 0.0),
+            "Prethodna godina": previous_values.get(aop, 0.0)
+        }
+        for aop in order
+    ])
+
+
+def build_rule_trace(df, rules_file, sheet_name, year_mode="current"):
+    """v9 trace: покажува кога fallback синтетика е искористена и кога е спречено дуплирање."""
+    try:
+        rules = read_rules(rules_file, sheet_name)
+    except Exception as e:
+        return pd.DataFrame([{"Sheet": sheet_name, "Грешка": str(e)}])
+
+    rows = []
+    used_fallback_parents = set()
+
+    for _, row in rules.iterrows():
+        aop = format_aop(row.get("AOP", ""))
+        pozicija = str(row.get("Pozicija", "")).strip()
+
+        if year_mode == "previous":
+            konto_text = row.get("konto_prethodna", row.get("konto", None))
+            kolona = row.get("kolona_prethodna", None)
+            operacija = row.get("Operacija_prethodna", row.get("Operacija", "+"))
+        else:
+            konto_text = row.get("konto", None)
+            kolona = row.get("kolona", None)
+            operacija = row.get("Operacija", "+")
+
+        if pd.isna(konto_text) or pd.isna(kolona):
+            continue
+
+        prefixes = [normalize_rule_prefix(x) for x in konto_list(konto_text)]
+        prefixes = [x for x in prefixes if x]
+
+        if prefixes:
+            idxs, excluded_idxs, notes = _matching_effective_details_v9(
+                df,
+                prefixes,
+                kolona=str(kolona).strip(),
+                used_fallback_parents=used_fallback_parents
+            )
+            match_mode = "effective-v9"
+        else:
+            idxs, excluded_idxs, notes = [], [], []
+            match_mode = "none"
+
+        if idxs:
+            matched_df = df.loc[idxs].copy()
+            matched_konta = matched_df["konto"].astype(str).tolist()
+            value = float(matched_df[str(kolona).strip()].apply(clean_number).sum())
+        else:
+            matched_konta = []
+            value = 0.0
+
+        excluded_konta = df.loc[excluded_idxs, "konto"].astype(str).tolist() if excluded_idxs else []
+
+        if str(operacija).strip() == "-":
+            value = -value
+
+        rows.append({
+            "AOP": aop,
+            "Позиција": pozicija,
+            "Правило конта": str(konto_text),
+            "Колона": str(kolona),
+            "Операција": str(operacija),
+            "Начин": match_mode,
+            "Број конта": len(matched_konta),
+            "Погодени конта": ", ".join(matched_konta[:40]) + (" ..." if len(matched_konta) > 40 else ""),
+            "Исклучени синтетики": ", ".join(excluded_konta[:40]) + (" ..." if len(excluded_konta) > 40 else ""),
+            "Објаснување": " | ".join(notes[:10]) + (" ..." if len(notes) > 10 else ""),
+            "Износ": value,
+            "Статус": "✅ OK" if len(matched_konta) > 0 else "⚠️ Нема погодени конта",
+        })
+
+    return pd.DataFrame(rows)
+
+# =====================================================
+# END SIGMA v9 FIXES
+# =====================================================
+
 def load_zaklucen_cached(file_name, file_bytes):
     """
     Го чита заклучниот лист само еднаш за ист uploaded фајл.
@@ -3647,6 +4099,405 @@ def load_zaklucen_cached(file_name, file_bytes):
         df_loaded = read_zaklucen(file_obj)
 
     return normalize_dataframe_numbers(df_loaded)
+
+
+
+# =====================================================
+# CFO REPORT - HTML / PRINT TO PDF
+# Додадено врз стабилниот работен код без промена на BU/BS/019/234/240 логиката.
+# =====================================================
+
+def cfo_escape(value):
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return html_lib.escape(str(value))
+
+
+def cfo_format_number(value):
+    try:
+        if pd.isna(value):
+            return ""
+        return f"{float(value):,.0f}".replace(",", ".")
+    except Exception:
+        return cfo_escape(value)
+
+
+def cfo_format_percent(value):
+    try:
+        if pd.isna(value):
+            return ""
+        return f"{float(value) * 100:.2f}%"
+    except Exception:
+        return cfo_escape(value)
+
+
+def cfo_remove_empty_report_rows(df, value_columns):
+    """
+    Ги трга нултите/празните редови само за приказ во CFO извештај.
+    Не ја менува пресметковната логика на BU, BS, 019, 234/240.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+
+    result = df.copy()
+    existing_value_cols = [c for c in value_columns if c in result.columns]
+
+    if not existing_value_cols:
+        return result
+
+    numeric_part = result[existing_value_cols].apply(
+        pd.to_numeric,
+        errors="coerce"
+    ).fillna(0)
+
+    mask_has_value = numeric_part.abs().sum(axis=1) != 0
+    return result.loc[mask_has_value].copy()
+
+
+def cfo_prepare_df_for_html(df, columns=None):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+
+    display_df = df.copy()
+
+    if columns:
+        existing_cols = [c for c in columns if c in display_df.columns]
+        if existing_cols:
+            display_df = display_df[existing_cols]
+
+    for col in display_df.columns:
+        if pd.api.types.is_numeric_dtype(display_df[col]):
+            display_df[col] = display_df[col].apply(cfo_format_number)
+        else:
+            display_df[col] = display_df[col].apply(cfo_escape)
+
+    return display_df
+
+
+def cfo_df_to_html(df, title, columns=None):
+    display_df = cfo_prepare_df_for_html(df, columns)
+
+    if display_df.empty:
+        return f"""
+        <section class="report-section page-break">
+            <h2>{cfo_escape(title)}</h2>
+            <p class="muted">Нема достапни податоци за овој извештај.</p>
+        </section>
+        """
+
+    table_html = display_df.to_html(
+        index=False,
+        border=0,
+        escape=False,
+        classes="cfo-table"
+    )
+
+    return f"""
+    <section class="report-section page-break">
+        <h2>{cfo_escape(title)}</h2>
+        {table_html}
+    </section>
+    """
+
+
+def cfo_get_aop_value(report_df, aop, value_col="Iznos"):
+    try:
+        if report_df is None or report_df.empty:
+            return 0.0
+        if "AOP" not in report_df.columns or value_col not in report_df.columns:
+            return 0.0
+
+        aop_series = (
+            report_df["AOP"]
+            .astype(str)
+            .str.strip()
+            .str.replace(".0", "", regex=False)
+            .str.zfill(3)
+        )
+
+        return float(
+            pd.to_numeric(
+                report_df.loc[aop_series == str(aop).zfill(3), value_col],
+                errors="coerce"
+            ).fillna(0).sum()
+        )
+    except Exception:
+        return 0.0
+
+
+def cfo_get_kpi_raw(kpi_df, naziv_contains):
+    try:
+        if kpi_df is None or kpi_df.empty:
+            return 0.0
+
+        if "Naziv" not in kpi_df.columns:
+            return 0.0
+
+        match = kpi_df[
+            kpi_df["Naziv"].astype(str).str.contains(
+                naziv_contains,
+                case=False,
+                na=False
+            )
+        ]
+
+        if match.empty:
+            return 0.0
+
+        if "RawValue" in match.columns:
+            return float(match.iloc[0].get("RawValue", 0.0))
+
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def build_cfo_snapshot_df_for_report(df, bu, kpi):
+    try:
+        be_cfo = calculate_break_even(
+            df=df,
+            bu=bu,
+            sales_aops=["202"],
+            pct_402=70,
+            pct_403=70
+        )
+        be_map = dict(zip(be_cfo["Показател"], be_cfo["Вредност"]))
+    except Exception:
+        be_map = {}
+
+    sales_revenue = float(be_map.get("Приход од продажба", 0))
+    break_even_sales = float(be_map.get("Break-even продажба", 0))
+    margin_of_safety = float(be_map.get("Над Break-even", 0))
+    safety_margin_pct = float(be_map.get("Безбедносна маргина %", 0))
+
+    net_profit = cfo_get_aop_value(bu, "255", "Iznos")
+    net_loss = cfo_get_aop_value(bu, "256", "Iznos")
+    net_result = net_profit - net_loss
+
+    current_ratio = cfo_get_kpi_raw(kpi, "ТЕКОВНА ЛИКВИДНОСТ")
+    profit_margin = cfo_get_kpi_raw(kpi, "ПРОФИТНА МАРЖА")
+    debt_ratio = cfo_get_kpi_raw(kpi, "ВКУПНА ЗАДОЛЖЕНОСТ")
+
+    score = 0
+
+    if net_result > 0 and profit_margin >= 0.15:
+        score += 35
+    elif net_result > 0 and profit_margin >= 0.05:
+        score += 25
+    elif net_result > 0:
+        score += 15
+
+    if current_ratio >= 1.5:
+        score += 35
+    elif current_ratio >= 1.0:
+        score += 25
+    elif current_ratio >= 0.7:
+        score += 15
+    else:
+        score += 5
+
+    if safety_margin_pct >= 0.30:
+        score += 30
+    elif safety_margin_pct >= 0.10:
+        score += 20
+    elif safety_margin_pct > 0:
+        score += 10
+
+    if score >= 80:
+        status = "🟢 Стабилна финансиска состојба"
+        comment = "Компанијата има добра комбинација на профитабилност, ликвидност и безбедносна маргина."
+    elif score >= 55:
+        status = "🟡 Средна зона"
+        comment = "Компанијата е функционална, но има области каде што треба да се следи ликвидноста, профитабилноста или break-even позицијата."
+    else:
+        status = "🔴 Потребно е внимание"
+        comment = "Потребна е подетална CFO анализа, особено на трошоци, ликвидност и продажба."
+
+    return pd.DataFrame([
+        {"Показател": "CFO Score", "Вредност": f"{score}/100", "Коментар": status},
+        {"Показател": "Нето резултат", "Вредност": cfo_format_number(net_result), "Коментар": "Добивка - загуба"},
+        {"Показател": "Приход од продажба", "Вредност": cfo_format_number(sales_revenue), "Коментар": "Основен приход за анализа"},
+        {"Показател": "Break-even продажба", "Вредност": cfo_format_number(break_even_sales), "Коментар": "Минимална продажба за покривање на трошоци"},
+        {"Показател": "Над Break-even", "Вредност": cfo_format_number(margin_of_safety), "Коментар": "Разлика меѓу продажба и break-even"},
+        {"Показател": "Безбедносна маргина", "Вредност": cfo_format_percent(safety_margin_pct), "Коментар": "Колку компанијата е над критичната точка"},
+        {"Показател": "Тековна ликвидност", "Вредност": f"{current_ratio:.2f}", "Коментар": "Способност за покривање краткорочни обврски"},
+        {"Показател": "Профитна маржа", "Вредност": cfo_format_percent(profit_margin), "Коментар": "Профитабилност од продажбата"},
+        {"Показател": "Вкупна задолженост", "Вредност": cfo_format_percent(debt_ratio), "Коментар": "Однос на обврски во структурата"},
+        {"Показател": "CFO Коментар", "Вредност": status, "Коментар": comment},
+    ])
+
+
+def build_cfo_report_html(company_name, period_label, sections_html):
+    generated_at = datetime.now().strftime("%d.%m.%Y %H:%M")
+    all_sections = "\n".join(sections_html)
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CFO Извештај</title>
+<style>
+    body {{
+        font-family: Arial, sans-serif;
+        margin: 36px;
+        color: #111827;
+        background: white;
+    }}
+
+    .print-button {{
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        background: #111827;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-weight: 700;
+        cursor: pointer;
+        z-index: 999;
+    }}
+
+    .cover {{
+        min-height: 760px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        border: 2px solid #111827;
+        padding: 50px;
+        margin-bottom: 40px;
+    }}
+
+    .brand {{
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: #2563eb;
+        margin-bottom: 20px;
+    }}
+
+    h1 {{
+        font-size: 42px;
+        margin: 0 0 12px 0;
+        color: #111827;
+    }}
+
+    .subtitle {{
+        font-size: 18px;
+        color: #4b5563;
+        line-height: 1.6;
+    }}
+
+    .meta {{
+        margin-top: 70px;
+        font-size: 14px;
+        color: #374151;
+    }}
+
+    .report-section {{
+        margin-top: 28px;
+        margin-bottom: 36px;
+    }}
+
+    h2 {{
+        font-size: 22px;
+        color: #111827;
+        border-bottom: 2px solid #111827;
+        padding-bottom: 8px;
+        margin-bottom: 14px;
+    }}
+
+    .cfo-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+        margin-top: 10px;
+    }}
+
+    .cfo-table th {{
+        background: #f3f4f6;
+        color: #111827;
+        border: 1px solid #d1d5db;
+        padding: 7px;
+        text-align: left;
+        font-weight: 700;
+    }}
+
+    .cfo-table td {{
+        border: 1px solid #e5e7eb;
+        padding: 6px;
+        vertical-align: top;
+    }}
+
+    .cfo-table tr:nth-child(even) td {{
+        background: #fafafa;
+    }}
+
+    .muted {{
+        color: #6b7280;
+        font-size: 13px;
+    }}
+
+    .footer {{
+        margin-top: 40px;
+        padding-top: 12px;
+        border-top: 1px solid #e5e7eb;
+        font-size: 11px;
+        color: #6b7280;
+        text-align: center;
+    }}
+
+    @media print {{
+        .print-button {{
+            display: none;
+        }}
+
+        body {{
+            margin: 18px;
+        }}
+
+        .page-break {{
+            page-break-before: always;
+        }}
+
+        .cover {{
+            page-break-after: always;
+            min-height: 700px;
+        }}
+    }}
+</style>
+</head>
+<body>
+
+<button class="print-button" onclick="window.print()">🖨️ Print / Save as PDF</button>
+
+<div class="cover">
+    <div class="brand">SIGMA ACCOUNTING</div>
+    <h1>📘 CFO Извештај</h1>
+    <div class="subtitle">
+        <strong>{cfo_escape(company_name)}</strong><br>
+        Период: {cfo_escape(period_label)}
+    </div>
+
+    <div class="meta">
+        Извештајот е подготвен врз основа на прикачен заклучен лист и автоматски генерирани финансиски извештаи.<br>
+        Генерирано на: {generated_at}
+    </div>
+</div>
+
+{all_sections}
+
+<div class="footer">
+    CFO Извештај генериран преку SIGMA Financial Reports.
+</div>
+
+</body>
+</html>
+"""
 
 
 if zaklucen_file :
@@ -3886,407 +4737,6 @@ if zaklucen_file :
 
             return demo    
             
-        
-        # =====================================================
-# CFO REPORT - HTML / PRINT TO PDF
-# =====================================================
-
-        def cfo_escape(value):
-            try:
-                if pd.isna(value):
-                    return ""
-            except Exception:
-                pass
-            return html_lib.escape(str(value))
-
-
-        def cfo_format_number(value):
-            try:
-                if pd.isna(value):
-                    return ""
-                return f"{float(value):,.0f}".replace(",", ".")
-            except Exception:
-                return cfo_escape(value)
-
-
-        def cfo_remove_empty_report_rows(df, value_columns):
-            """
-            Gi trga praznite/nulti redovi od CFO izvestajot.
-            Redot ostanuva samo ako barem edna od izbranite vrednosni koloni ima iznos != 0.
-            """
-            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-                return pd.DataFrame()
-
-            result = df.copy()
-
-            existing_value_cols = [c for c in value_columns if c in result.columns]
-            if not existing_value_cols:
-                return result
-
-            numeric_part = result[existing_value_cols].apply(
-                pd.to_numeric,
-                errors="coerce"
-            ).fillna(0)
-
-            mask_has_value = numeric_part.abs().sum(axis=1) != 0
-
-            return result.loc[mask_has_value].copy()
-
-
-        def cfo_format_percent(value):
-            try:
-                if pd.isna(value):
-                    return ""
-                return f"{float(value) * 100:.2f}%"
-            except Exception:
-                return cfo_escape(value)
-            
-            
-
-
-        def cfo_prepare_df_for_html(df, columns=None):
-            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-                return pd.DataFrame()
-
-            display_df = df.copy()
-
-            if columns:
-                existing_cols = [c for c in columns if c in display_df.columns]
-                if existing_cols:
-                    display_df = display_df[existing_cols]
-
-            for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]):
-                    display_df[col] = display_df[col].apply(cfo_format_number)
-                else:
-                    display_df[col] = display_df[col].apply(cfo_escape)
-
-            return display_df
-
-
-        def cfo_df_to_html(df, title, columns=None):
-            display_df = cfo_prepare_df_for_html(df, columns)
-
-            if display_df.empty:
-                return f"""
-                <section class="report-section">
-                    <h2>{cfo_escape(title)}</h2>
-                    <p class="muted">Нема достапни податоци за овој извештај.</p>
-                </section>
-                """
-
-            table_html = display_df.to_html(
-                index=False,
-                border=0,
-                escape=False,
-                classes="cfo-table"
-            )
-
-            return f"""
-            <section class="report-section page-break">
-                <h2>{cfo_escape(title)}</h2>
-                {table_html}
-            </section>
-            """
-
-
-        def cfo_get_aop_value(report_df, aop, value_col="Iznos"):
-            try:
-                if report_df is None or report_df.empty:
-                    return 0.0
-                if "AOP" not in report_df.columns or value_col not in report_df.columns:
-                    return 0.0
-
-                aop_series = (
-                    report_df["AOP"]
-                    .astype(str)
-                    .str.strip()
-                    .str.replace(".0", "", regex=False)
-                    .str.zfill(3)
-                )
-
-                return float(
-                    pd.to_numeric(
-                        report_df.loc[aop_series == str(aop).zfill(3), value_col],
-                        errors="coerce"
-                    ).fillna(0).sum()
-                )
-            except Exception:
-                return 0.0
-
-
-        def cfo_get_kpi_raw(kpi_df, naziv_contains):
-            try:
-                if kpi_df is None or kpi_df.empty:
-                    return 0.0
-
-                match = kpi_df[
-                    kpi_df["Naziv"].astype(str).str.contains(
-                        naziv_contains,
-                        case=False,
-                        na=False
-                    )
-                ]
-
-                if match.empty:
-                    return 0.0
-
-                if "RawValue" in match.columns:
-                    return float(match.iloc[0].get("RawValue", 0.0))
-
-                return 0.0
-            except Exception:
-                return 0.0
-
-
-        def build_cfo_snapshot_df_for_report(df, bu, kpi):
-            try:
-                be_cfo = calculate_break_even(
-                    df=df,
-                    bu=bu,
-                    sales_aops=["202"],
-                    pct_402=70,
-                    pct_403=70
-                )
-                be_map = dict(zip(be_cfo["Показател"], be_cfo["Вредност"]))
-            except Exception:
-                be_map = {}
-
-            sales_revenue = float(be_map.get("Приход од продажба", 0))
-            break_even_sales = float(be_map.get("Break-even продажба", 0))
-            margin_of_safety = float(be_map.get("Над Break-even", 0))
-            safety_margin_pct = float(be_map.get("Безбедносна маргина %", 0))
-
-            net_profit = cfo_get_aop_value(bu, "255", "Iznos")
-            net_loss = cfo_get_aop_value(bu, "256", "Iznos")
-            net_result = net_profit - net_loss
-
-            current_ratio = cfo_get_kpi_raw(kpi, "ТЕКОВНА ЛИКВИДНОСТ")
-            profit_margin = cfo_get_kpi_raw(kpi, "ПРОФИТНА МАРЖА")
-            debt_ratio = cfo_get_kpi_raw(kpi, "ВКУПНА ЗАДОЛЖЕНОСТ")
-
-            score = 0
-
-            # Профитабилност
-            if net_result > 0 and profit_margin >= 0.15:
-                score += 35
-            elif net_result > 0 and profit_margin >= 0.05:
-                score += 25
-            elif net_result > 0:
-                score += 15
-
-            # Ликвидност
-            if current_ratio >= 1.5:
-                score += 35
-            elif current_ratio >= 1.0:
-                score += 25
-            elif current_ratio >= 0.7:
-                score += 15
-            else:
-                score += 5
-
-            # Break-even безбедносна маргина
-            if safety_margin_pct >= 0.30:
-                score += 30
-            elif safety_margin_pct >= 0.10:
-                score += 20
-            elif safety_margin_pct > 0:
-                score += 10
-
-            if score >= 80:
-                status = "🟢 Стабилна финансиска состојба"
-                comment = "Компанијата има добра комбинација на профитабилност, ликвидност и безбедносна маргина."
-            elif score >= 55:
-                status = "🟡 Средна зона"
-                comment = "Компанијата е функционална, но има области каде што треба да се следи ликвидноста, профитабилноста или break-even позицијата."
-            else:
-                status = "🔴 Потребно е внимание"
-                comment = "Потребна е подетална CFO анализа, особено на трошоци, ликвидност и продажба."
-
-            return pd.DataFrame([
-                {"Показател": "CFO Score", "Вредност": f"{score}/100", "Коментар": status},
-                {"Показател": "Нето резултат", "Вредност": cfo_format_number(net_result), "Коментар": "Добивка - загуба"},
-                {"Показател": "Приход од продажба", "Вредност": cfo_format_number(sales_revenue), "Коментар": "Основен приход за анализа"},
-                {"Показател": "Break-even продажба", "Вредност": cfo_format_number(break_even_sales), "Коментар": "Минимална продажба за покривање на трошоци"},
-                {"Показател": "Над Break-even", "Вредност": cfo_format_number(margin_of_safety), "Коментар": "Разлика меѓу продажба и break-even"},
-                {"Показател": "Безбедносна маргина", "Вредност": cfo_format_percent(safety_margin_pct), "Коментар": "Колку компанијата е над критичната точка"},
-                {"Показател": "Тековна ликвидност", "Вредност": f"{current_ratio:.2f}", "Коментар": "Способност за покривање краткорочни обврски"},
-                {"Показател": "Профитна маржа", "Вредност": cfo_format_percent(profit_margin), "Коментар": "Профитабилност од продажбата"},
-                {"Показател": "Вкупна задолженост", "Вредност": cfo_format_percent(debt_ratio), "Коментар": "Однос на обврски во структурата"},
-                {"Показател": "CFO Коментар", "Вредност": status, "Коментар": comment},
-            ])
-
-
-        def build_cfo_report_html(company_name, period_label, sections_html):
-            generated_at = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-            all_sections = "\n".join(sections_html)
-
-            return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta charset="utf-8">
-        <title>CFO Извештај</title>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                margin: 36px;
-                color: #111827;
-                background: white;
-            }}
-
-            .print-button {{
-                position: fixed;
-                top: 16px;
-                right: 16px;
-                background: #111827;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 16px;
-                font-weight: 700;
-                cursor: pointer;
-                z-index: 999;
-            }}
-
-            .cover {{
-                min-height: 760px;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                border: 2px solid #111827;
-                padding: 50px;
-                margin-bottom: 40px;
-            }}
-
-            .brand {{
-                font-size: 18px;
-                font-weight: 700;
-                letter-spacing: 1px;
-                color: #2563eb;
-                margin-bottom: 20px;
-            }}
-
-            h1 {{
-                font-size: 42px;
-                margin: 0 0 12px 0;
-                color: #111827;
-            }}
-
-            .subtitle {{
-                font-size: 18px;
-                color: #4b5563;
-                line-height: 1.6;
-            }}
-
-            .meta {{
-                margin-top: 70px;
-                font-size: 14px;
-                color: #374151;
-            }}
-
-            .report-section {{
-                margin-top: 28px;
-                margin-bottom: 36px;
-            }}
-
-            h2 {{
-                font-size: 22px;
-                color: #111827;
-                border-bottom: 2px solid #111827;
-                padding-bottom: 8px;
-                margin-bottom: 14px;
-            }}
-
-            .cfo-table {{
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 11px;
-                margin-top: 10px;
-            }}
-
-            .cfo-table th {{
-                background: #f3f4f6;
-                color: #111827;
-                border: 1px solid #d1d5db;
-                padding: 7px;
-                text-align: left;
-                font-weight: 700;
-            }}
-
-            .cfo-table td {{
-                border: 1px solid #e5e7eb;
-                padding: 6px;
-                vertical-align: top;
-            }}
-
-            .cfo-table tr:nth-child(even) td {{
-                background: #fafafa;
-            }}
-
-            .muted {{
-                color: #6b7280;
-                font-size: 13px;
-            }}
-
-            .footer {{
-                margin-top: 40px;
-                padding-top: 12px;
-                border-top: 1px solid #e5e7eb;
-                font-size: 11px;
-                color: #6b7280;
-                text-align: center;
-            }}
-
-            @media print {{
-                .print-button {{
-                    display: none;
-                }}
-
-                body {{
-                    margin: 18px;
-                }}
-
-                .page-break {{
-                    page-break-before: always;
-                }}
-
-                .cover {{
-                    page-break-after: always;
-                    min-height: 700px;
-                }}
-            }}
-        </style>
-        </head>
-        <body>
-
-        <button class="print-button" onclick="window.print()">🖨️ Print / Save as PDF</button>
-
-        <div class="cover">
-            <div class="brand">SIGMA ACCOUNTING</div>
-            <h1>📘 CFO Извештај</h1>
-            <div class="subtitle">
-                <strong>{cfo_escape(company_name)}</strong><br>
-                Период: {cfo_escape(period_label)}
-            </div>
-
-            <div class="meta">
-                Извештајот е подготвен врз основа на прикачен заклучен лист и автоматски генерирани финансиски извештаи.<br>
-                Генерирано на: {generated_at}
-            </div>
-        </div>
-
-        {all_sections}
-
-        <div class="footer">
-            CFO Извештај генериран преку SIGMA Financial Reports.
-        </div>
-
-        </body>
-        </html>
-        """
-
         
         st.sidebar.markdown('<div class="sigma-sidebar-section">Навигација</div>', unsafe_allow_html=True)
 
@@ -4873,7 +5323,7 @@ if zaklucen_file :
         elif izbran_izvestaj == "📘 CFO Извештај":
 
             st.title("📘 CFO Извештај")
-            st.caption("Комбиниран извештај со избор на секции за печатење / зачувување како PDF.")
+            st.caption("Комбиниран CFO извештај со избор на секции за печатење / зачувување како PDF.")
 
             if user_plan != "PREMIUM":
                 premium_lock("CFO Извештај")
@@ -4883,13 +5333,15 @@ if zaklucen_file :
                 with col1:
                     company_name = st.text_input(
                         "Назив на компанија",
-                        value="Клиент / Компанија"
+                        value="Клиент / Компанија",
+                        key="cfo_report_company_name"
                     )
 
                 with col2:
                     period_label = st.text_input(
                         "Период",
-                        value=datetime.now().strftime("%d.%m.%Y")
+                        value=datetime.now().strftime("%d.%m.%Y"),
+                        key="cfo_report_period"
                     )
 
                 st.subheader("Избери кои извештаи да бидат вклучени")
@@ -4897,18 +5349,18 @@ if zaklucen_file :
                 c1, c2, c3 = st.columns(3)
 
                 with c1:
-                    include_snapshot = st.checkbox("📄 CFO Snapshot", value=True)
-                    include_bu = st.checkbox("📈 Биланс на успех", value=True)
+                    include_snapshot = st.checkbox("📄 CFO Snapshot", value=True, key="cfo_include_snapshot")
+                    include_bu = st.checkbox("📈 Биланс на успех", value=True, key="cfo_include_bu")
 
                 with c2:
-                    include_bs = st.checkbox("🏦 Биланс на состојба", value=True)
-                    include_cf = st.checkbox("💧 Cash Flow", value=True)
+                    include_bs = st.checkbox("🏦 Биланс на состојба", value=True, key="cfo_include_bs")
+                    include_cf = st.checkbox("💧 Cash Flow", value=True, key="cfo_include_cf")
 
                 with c3:
-                    include_kpi = st.checkbox("📊 KPI Dashboard", value=True)
-                    include_sd = st.checkbox("🧾 Сеопфатна добивка", value=True)
+                    include_kpi = st.checkbox("📊 KPI Dashboard", value=True, key="cfo_include_kpi")
+                    include_sd = st.checkbox("🧾 Сеопфатна добивка", value=True, key="cfo_include_sd")
 
-                if st.button("📄 Генерирај CFO извештај", type="primary"):
+                if st.button("📄 Генерирај CFO извештај", type="primary", key="generate_cfo_report_btn"):
 
                     sections_html = []
 
@@ -4951,9 +5403,13 @@ if zaklucen_file :
 
                     if include_cf:
                         if cf is not None:
+                            cf_cfo = cfo_remove_empty_report_rows(
+                                cf,
+                                value_columns=["Iznos"]
+                            )
                             sections_html.append(
                                 cfo_df_to_html(
-                                    cf,
+                                    cf_cfo,
                                     "Cash Flow"
                                 )
                             )
@@ -4968,13 +5424,23 @@ if zaklucen_file :
                             )
 
                     if include_kpi:
-                        sections_html.append(
-                            cfo_df_to_html(
-                                kpi,
-                                "KPI Dashboard",
-                                columns=["Kategorija", "Naziv", "Vrednost", "Status"]
+                        if kpi is not None:
+                            sections_html.append(
+                                cfo_df_to_html(
+                                    kpi,
+                                    "KPI Dashboard",
+                                    columns=["Kategorija", "Naziv", "Vrednost", "Status"]
+                                )
                             )
-                        )
+                        else:
+                            sections_html.append(
+                                """
+                                <section class="report-section page-break">
+                                    <h2>KPI Dashboard</h2>
+                                    <p class="muted">KPI не е вчитан или не е пресметан.</p>
+                                </section>
+                                """
+                            )
 
                     if include_sd:
                         try:
@@ -4982,9 +5448,14 @@ if zaklucen_file :
                         except Exception:
                             sd_report = sd
 
+                        sd_cfo = cfo_remove_empty_report_rows(
+                            sd_report,
+                            value_columns=["Tekovna godina"]
+                        )
+
                         sections_html.append(
                             cfo_df_to_html(
-                                sd_report,
+                                sd_cfo,
                                 "Сеопфатна добивка"
                             )
                         )
@@ -5004,7 +5475,8 @@ if zaklucen_file :
                             "⬇️ Преземи CFO извештај како HTML / Print to PDF",
                             data=cfo_html.encode("utf-8"),
                             file_name="CFO_izvestaj.html",
-                            mime="text/html"
+                            mime="text/html",
+                            key="download_cfo_report_html"
                         )
 
                         with st.expander("👁️ Преглед на CFO извештај", expanded=True):
