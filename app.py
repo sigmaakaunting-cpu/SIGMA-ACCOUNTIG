@@ -8,6 +8,8 @@ from PIL import Image
 import pdfplumber
 import os
 from datetime import datetime, timedelta
+import html as html_lib
+import streamlit.components.v1 as components
 
 APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - 02.07.2026"
 
@@ -3885,6 +3887,407 @@ if zaklucen_file :
             return demo    
             
         
+        # =====================================================
+# CFO REPORT - HTML / PRINT TO PDF
+# =====================================================
+
+        def cfo_escape(value):
+            try:
+                if pd.isna(value):
+                    return ""
+            except Exception:
+                pass
+            return html_lib.escape(str(value))
+
+
+        def cfo_format_number(value):
+            try:
+                if pd.isna(value):
+                    return ""
+                return f"{float(value):,.0f}".replace(",", ".")
+            except Exception:
+                return cfo_escape(value)
+
+
+        def cfo_remove_empty_report_rows(df, value_columns):
+            """
+            Gi trga praznite/nulti redovi od CFO izvestajot.
+            Redot ostanuva samo ako barem edna od izbranite vrednosni koloni ima iznos != 0.
+            """
+            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                return pd.DataFrame()
+
+            result = df.copy()
+
+            existing_value_cols = [c for c in value_columns if c in result.columns]
+            if not existing_value_cols:
+                return result
+
+            numeric_part = result[existing_value_cols].apply(
+                pd.to_numeric,
+                errors="coerce"
+            ).fillna(0)
+
+            mask_has_value = numeric_part.abs().sum(axis=1) != 0
+
+            return result.loc[mask_has_value].copy()
+
+
+        def cfo_format_percent(value):
+            try:
+                if pd.isna(value):
+                    return ""
+                return f"{float(value) * 100:.2f}%"
+            except Exception:
+                return cfo_escape(value)
+            
+            
+
+
+        def cfo_prepare_df_for_html(df, columns=None):
+            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                return pd.DataFrame()
+
+            display_df = df.copy()
+
+            if columns:
+                existing_cols = [c for c in columns if c in display_df.columns]
+                if existing_cols:
+                    display_df = display_df[existing_cols]
+
+            for col in display_df.columns:
+                if pd.api.types.is_numeric_dtype(display_df[col]):
+                    display_df[col] = display_df[col].apply(cfo_format_number)
+                else:
+                    display_df[col] = display_df[col].apply(cfo_escape)
+
+            return display_df
+
+
+        def cfo_df_to_html(df, title, columns=None):
+            display_df = cfo_prepare_df_for_html(df, columns)
+
+            if display_df.empty:
+                return f"""
+                <section class="report-section">
+                    <h2>{cfo_escape(title)}</h2>
+                    <p class="muted">Нема достапни податоци за овој извештај.</p>
+                </section>
+                """
+
+            table_html = display_df.to_html(
+                index=False,
+                border=0,
+                escape=False,
+                classes="cfo-table"
+            )
+
+            return f"""
+            <section class="report-section page-break">
+                <h2>{cfo_escape(title)}</h2>
+                {table_html}
+            </section>
+            """
+
+
+        def cfo_get_aop_value(report_df, aop, value_col="Iznos"):
+            try:
+                if report_df is None or report_df.empty:
+                    return 0.0
+                if "AOP" not in report_df.columns or value_col not in report_df.columns:
+                    return 0.0
+
+                aop_series = (
+                    report_df["AOP"]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(".0", "", regex=False)
+                    .str.zfill(3)
+                )
+
+                return float(
+                    pd.to_numeric(
+                        report_df.loc[aop_series == str(aop).zfill(3), value_col],
+                        errors="coerce"
+                    ).fillna(0).sum()
+                )
+            except Exception:
+                return 0.0
+
+
+        def cfo_get_kpi_raw(kpi_df, naziv_contains):
+            try:
+                if kpi_df is None or kpi_df.empty:
+                    return 0.0
+
+                match = kpi_df[
+                    kpi_df["Naziv"].astype(str).str.contains(
+                        naziv_contains,
+                        case=False,
+                        na=False
+                    )
+                ]
+
+                if match.empty:
+                    return 0.0
+
+                if "RawValue" in match.columns:
+                    return float(match.iloc[0].get("RawValue", 0.0))
+
+                return 0.0
+            except Exception:
+                return 0.0
+
+
+        def build_cfo_snapshot_df_for_report(df, bu, kpi):
+            try:
+                be_cfo = calculate_break_even(
+                    df=df,
+                    bu=bu,
+                    sales_aops=["202"],
+                    pct_402=70,
+                    pct_403=70
+                )
+                be_map = dict(zip(be_cfo["Показател"], be_cfo["Вредност"]))
+            except Exception:
+                be_map = {}
+
+            sales_revenue = float(be_map.get("Приход од продажба", 0))
+            break_even_sales = float(be_map.get("Break-even продажба", 0))
+            margin_of_safety = float(be_map.get("Над Break-even", 0))
+            safety_margin_pct = float(be_map.get("Безбедносна маргина %", 0))
+
+            net_profit = cfo_get_aop_value(bu, "255", "Iznos")
+            net_loss = cfo_get_aop_value(bu, "256", "Iznos")
+            net_result = net_profit - net_loss
+
+            current_ratio = cfo_get_kpi_raw(kpi, "ТЕКОВНА ЛИКВИДНОСТ")
+            profit_margin = cfo_get_kpi_raw(kpi, "ПРОФИТНА МАРЖА")
+            debt_ratio = cfo_get_kpi_raw(kpi, "ВКУПНА ЗАДОЛЖЕНОСТ")
+
+            score = 0
+
+            # Профитабилност
+            if net_result > 0 and profit_margin >= 0.15:
+                score += 35
+            elif net_result > 0 and profit_margin >= 0.05:
+                score += 25
+            elif net_result > 0:
+                score += 15
+
+            # Ликвидност
+            if current_ratio >= 1.5:
+                score += 35
+            elif current_ratio >= 1.0:
+                score += 25
+            elif current_ratio >= 0.7:
+                score += 15
+            else:
+                score += 5
+
+            # Break-even безбедносна маргина
+            if safety_margin_pct >= 0.30:
+                score += 30
+            elif safety_margin_pct >= 0.10:
+                score += 20
+            elif safety_margin_pct > 0:
+                score += 10
+
+            if score >= 80:
+                status = "🟢 Стабилна финансиска состојба"
+                comment = "Компанијата има добра комбинација на профитабилност, ликвидност и безбедносна маргина."
+            elif score >= 55:
+                status = "🟡 Средна зона"
+                comment = "Компанијата е функционална, но има области каде што треба да се следи ликвидноста, профитабилноста или break-even позицијата."
+            else:
+                status = "🔴 Потребно е внимание"
+                comment = "Потребна е подетална CFO анализа, особено на трошоци, ликвидност и продажба."
+
+            return pd.DataFrame([
+                {"Показател": "CFO Score", "Вредност": f"{score}/100", "Коментар": status},
+                {"Показател": "Нето резултат", "Вредност": cfo_format_number(net_result), "Коментар": "Добивка - загуба"},
+                {"Показател": "Приход од продажба", "Вредност": cfo_format_number(sales_revenue), "Коментар": "Основен приход за анализа"},
+                {"Показател": "Break-even продажба", "Вредност": cfo_format_number(break_even_sales), "Коментар": "Минимална продажба за покривање на трошоци"},
+                {"Показател": "Над Break-even", "Вредност": cfo_format_number(margin_of_safety), "Коментар": "Разлика меѓу продажба и break-even"},
+                {"Показател": "Безбедносна маргина", "Вредност": cfo_format_percent(safety_margin_pct), "Коментар": "Колку компанијата е над критичната точка"},
+                {"Показател": "Тековна ликвидност", "Вредност": f"{current_ratio:.2f}", "Коментар": "Способност за покривање краткорочни обврски"},
+                {"Показател": "Профитна маржа", "Вредност": cfo_format_percent(profit_margin), "Коментар": "Профитабилност од продажбата"},
+                {"Показател": "Вкупна задолженост", "Вредност": cfo_format_percent(debt_ratio), "Коментар": "Однос на обврски во структурата"},
+                {"Показател": "CFO Коментар", "Вредност": status, "Коментар": comment},
+            ])
+
+
+        def build_cfo_report_html(company_name, period_label, sections_html):
+            generated_at = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            all_sections = "\n".join(sections_html)
+
+            return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <title>CFO Извештај</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                margin: 36px;
+                color: #111827;
+                background: white;
+            }}
+
+            .print-button {{
+                position: fixed;
+                top: 16px;
+                right: 16px;
+                background: #111827;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-weight: 700;
+                cursor: pointer;
+                z-index: 999;
+            }}
+
+            .cover {{
+                min-height: 760px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                border: 2px solid #111827;
+                padding: 50px;
+                margin-bottom: 40px;
+            }}
+
+            .brand {{
+                font-size: 18px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                color: #2563eb;
+                margin-bottom: 20px;
+            }}
+
+            h1 {{
+                font-size: 42px;
+                margin: 0 0 12px 0;
+                color: #111827;
+            }}
+
+            .subtitle {{
+                font-size: 18px;
+                color: #4b5563;
+                line-height: 1.6;
+            }}
+
+            .meta {{
+                margin-top: 70px;
+                font-size: 14px;
+                color: #374151;
+            }}
+
+            .report-section {{
+                margin-top: 28px;
+                margin-bottom: 36px;
+            }}
+
+            h2 {{
+                font-size: 22px;
+                color: #111827;
+                border-bottom: 2px solid #111827;
+                padding-bottom: 8px;
+                margin-bottom: 14px;
+            }}
+
+            .cfo-table {{
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 11px;
+                margin-top: 10px;
+            }}
+
+            .cfo-table th {{
+                background: #f3f4f6;
+                color: #111827;
+                border: 1px solid #d1d5db;
+                padding: 7px;
+                text-align: left;
+                font-weight: 700;
+            }}
+
+            .cfo-table td {{
+                border: 1px solid #e5e7eb;
+                padding: 6px;
+                vertical-align: top;
+            }}
+
+            .cfo-table tr:nth-child(even) td {{
+                background: #fafafa;
+            }}
+
+            .muted {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+
+            .footer {{
+                margin-top: 40px;
+                padding-top: 12px;
+                border-top: 1px solid #e5e7eb;
+                font-size: 11px;
+                color: #6b7280;
+                text-align: center;
+            }}
+
+            @media print {{
+                .print-button {{
+                    display: none;
+                }}
+
+                body {{
+                    margin: 18px;
+                }}
+
+                .page-break {{
+                    page-break-before: always;
+                }}
+
+                .cover {{
+                    page-break-after: always;
+                    min-height: 700px;
+                }}
+            }}
+        </style>
+        </head>
+        <body>
+
+        <button class="print-button" onclick="window.print()">🖨️ Print / Save as PDF</button>
+
+        <div class="cover">
+            <div class="brand">SIGMA ACCOUNTING</div>
+            <h1>📘 CFO Извештај</h1>
+            <div class="subtitle">
+                <strong>{cfo_escape(company_name)}</strong><br>
+                Период: {cfo_escape(period_label)}
+            </div>
+
+            <div class="meta">
+                Извештајот е подготвен врз основа на прикачен заклучен лист и автоматски генерирани финансиски извештаи.<br>
+                Генерирано на: {generated_at}
+            </div>
+        </div>
+
+        {all_sections}
+
+        <div class="footer">
+            CFO Извештај генериран преку SIGMA Financial Reports.
+        </div>
+
+        </body>
+        </html>
+        """
+
+        
         st.sidebar.markdown('<div class="sigma-sidebar-section">Навигација</div>', unsafe_allow_html=True)
 
         izbran_izvestaj = st.sidebar.radio(
@@ -3898,7 +4301,8 @@ if zaklucen_file :
                 "🧾 Сеопфатна добивка",
                 "💎 Valuation Dashboard",
                 "📍 Break-even Analysis",
-                "📄 CFO Snapshot"
+                "📄 CFO Snapshot",
+                "📘 CFO Извештај"
 
             ],
             index=0,
@@ -4464,6 +4868,148 @@ if zaklucen_file :
 
             for note in risk_notes:
                 st.warning(note)
+
+
+        elif izbran_izvestaj == "📘 CFO Извештај":
+
+            st.title("📘 CFO Извештај")
+            st.caption("Комбиниран извештај со избор на секции за печатење / зачувување како PDF.")
+
+            if user_plan != "PREMIUM":
+                premium_lock("CFO Извештај")
+            else:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    company_name = st.text_input(
+                        "Назив на компанија",
+                        value="Клиент / Компанија"
+                    )
+
+                with col2:
+                    period_label = st.text_input(
+                        "Период",
+                        value=datetime.now().strftime("%d.%m.%Y")
+                    )
+
+                st.subheader("Избери кои извештаи да бидат вклучени")
+
+                c1, c2, c3 = st.columns(3)
+
+                with c1:
+                    include_snapshot = st.checkbox("📄 CFO Snapshot", value=True)
+                    include_bu = st.checkbox("📈 Биланс на успех", value=True)
+
+                with c2:
+                    include_bs = st.checkbox("🏦 Биланс на состојба", value=True)
+                    include_cf = st.checkbox("💧 Cash Flow", value=True)
+
+                with c3:
+                    include_kpi = st.checkbox("📊 KPI Dashboard", value=True)
+                    include_sd = st.checkbox("🧾 Сеопфатна добивка", value=True)
+
+                if st.button("📄 Генерирај CFO извештај", type="primary"):
+
+                    sections_html = []
+
+                    if include_snapshot:
+                        cfo_snapshot_df = build_cfo_snapshot_df_for_report(df, bu, kpi)
+                        sections_html.append(
+                            cfo_df_to_html(
+                                cfo_snapshot_df,
+                                "CFO Snapshot"
+                            )
+                        )
+
+                    if include_bu:
+                        bu_cfo = cfo_remove_empty_report_rows(
+                            bu,
+                            value_columns=["Iznos"]
+                        )
+
+                        sections_html.append(
+                            cfo_df_to_html(
+                                bu_cfo,
+                                "Биланс на успех",
+                                columns=["AOP", "Pozicija", "Iznos"]
+                            )
+                        )
+
+                    if include_bs:
+                        bs_cfo = cfo_remove_empty_report_rows(
+                            bs,
+                            value_columns=["Tekovna godina", "Prethodna godina"]
+                        )
+
+                        sections_html.append(
+                            cfo_df_to_html(
+                                bs_cfo,
+                                "Биланс на состојба",
+                                columns=["AOP", "Pozicija", "Tekovna godina", "Prethodna godina"]
+                            )
+                        )
+
+                    if include_cf:
+                        if cf is not None:
+                            sections_html.append(
+                                cfo_df_to_html(
+                                    cf,
+                                    "Cash Flow"
+                                )
+                            )
+                        else:
+                            sections_html.append(
+                                """
+                                <section class="report-section page-break">
+                                    <h2>Cash Flow</h2>
+                                    <p class="muted">Cash Flow не е вчитан или не е пресметан.</p>
+                                </section>
+                                """
+                            )
+
+                    if include_kpi:
+                        sections_html.append(
+                            cfo_df_to_html(
+                                kpi,
+                                "KPI Dashboard",
+                                columns=["Kategorija", "Naziv", "Vrednost", "Status"]
+                            )
+                        )
+
+                    if include_sd:
+                        try:
+                            sd_report = sd[["Red", "Naziv", "Tekovna godina"]].copy()
+                        except Exception:
+                            sd_report = sd
+
+                        sections_html.append(
+                            cfo_df_to_html(
+                                sd_report,
+                                "Сеопфатна добивка"
+                            )
+                        )
+
+                    if not sections_html:
+                        st.warning("Нема избрано ниту еден извештај.")
+                    else:
+                        cfo_html = build_cfo_report_html(
+                            company_name=company_name,
+                            period_label=period_label,
+                            sections_html=sections_html
+                        )
+
+                        st.success("CFO извештајот е генериран.")
+
+                        st.download_button(
+                            "⬇️ Преземи CFO извештај како HTML / Print to PDF",
+                            data=cfo_html.encode("utf-8"),
+                            file_name="CFO_izvestaj.html",
+                            mime="text/html"
+                        )
+
+                        with st.expander("👁️ Преглед на CFO извештај", expanded=True):
+                            components.html(cfo_html, height=900, scrolling=True)
+
 
         elif izbran_izvestaj == "💎 Valuation Dashboard":
             st.subheader("📈 EBITDA Valuation / ПРОЦЕНКА")
