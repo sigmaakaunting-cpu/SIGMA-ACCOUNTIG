@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import html as html_lib
 import streamlit.components.v1 as components
 
-APP_VERSION = "SIGMA FINANCIAL REPORTS - PDF SAFE ROUTING V2 - 07.08.2026"
+APP_VERSION = "SIGMA FINANCIAL REPORTS - PDF SAFE V2 + REPORT VIEW - 07.08.2026"
 
 
 def clean_number(x):
@@ -521,6 +521,49 @@ zaklucen_file = st.file_uploader(
     "📤 Прикачи заклучен лист",
     type=["xls", "xlsx", "pdf"]
 )
+
+# =====================================================
+# REPORT NAVIGATION
+# Изборот на извештај се прави ПРЕД рендерирање на главната содржина.
+# Така на екранот се прикажува само избраниот извештај, без потреба
+# прво да се скрола низ заклучниот лист и дијагностиките.
+# =====================================================
+REPORT_OPTIONS = [
+    "🏠 Заклучен лист",
+    "📈 Биланс на успех",
+    "🏦 Биланс на состојба",
+    "💧 Cash Flow",
+    "📊 KPI Dashboard",
+    "🧾 Сеопфатна добивка",
+    "💎 Valuation Dashboard",
+    "📍 Break-even Analysis",
+    "📄 CFO Snapshot",
+    "📘 CFO Извештај",
+]
+
+if zaklucen_file is not None:
+    st.sidebar.markdown(
+        '<div class="sigma-sidebar-section">Навигација</div>',
+        unsafe_allow_html=True
+    )
+    izbran_izvestaj = st.sidebar.radio(
+        "",
+        REPORT_OPTIONS,
+        index=0,
+        key="izbran_izvestaj_sidebar",
+        label_visibility="collapsed"
+    )
+    st.sidebar.markdown(
+        """
+        <div class="sigma-sidebar-footer">
+            <b>PREMIUM модул</b><br>
+            Извештаи, KPI, Cash Flow и Valuation на едно место.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    izbran_izvestaj = "🏠 Заклучен лист"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -4661,7 +4704,8 @@ if zaklucen_file :
         # PDF/Excel се чита само еднаш за истиот upload фајл.
         df = load_zaklucen_cached(zaklucen_file.name, zaklucen_file.getvalue())
 
-        st.subheader("📑 Zaklucen list")
+        # Подготовка за приказ/export. Се пресметува еднаш, но се прикажува
+        # само кога корисникот е на „Заклучен лист“.
         sum_row = {"konto": "", "naziv": "VKUPNO"}
         for col in df.columns:
             if col not in ["konto", "naziv"]:
@@ -4676,46 +4720,50 @@ if zaklucen_file :
                 return ["font-weight: bold; font-size: 18px; background-color: #d9d9d9;" for _ in row]
             return ["" for _ in row]
 
-        st.dataframe(df_total.style.apply(style_total_row, axis=1), use_container_width=True)
-
-        st.subheader("✅ Kontrola na zaklucen list")
-        zaklucen_kontrola = validate_zaklucen_list(df)
-        if not zaklucen_kontrola.empty:
-            st.dataframe(zaklucen_kontrola, use_container_width=True)
-
-            open_diffs = zaklucen_kontrola[zaklucen_kontrola["Razlika"] != 0]
-            if open_diffs.empty:
-                st.success("Zaklucniot list e zatvoren ✅ Dolzi = Pobaruva")
-            else:
-                for _, kontrola_row in open_diffs.iterrows():
-                    st.error(
-                        f'{kontrola_row["Kontrola"]}: razlika {kontrola_row["Razlika"]:,.0f}'
-                    )
-
-        st.subheader("🧮 Збир по класи од заклучниот лист")
-        class_summary = build_konto_class_summary(df, mode="raw")
-        class_summary_display = class_summary.copy()
-        for _col in class_summary_display.columns:
-            if _col not in ["Класа", "Назив", "Број на редови"]:
-                class_summary_display.loc[:, _col] = class_summary_display[_col].round(0).astype(int)
-        st.dataframe(class_summary_display, use_container_width=True)
-
-        with st.expander("🔎 Збир по класи за правила - без дуплирање синтетика/аналитика", expanded=False):
-            st.caption(
-                "Оваа табела служи за проверка на правилата. Ако постои синтетичко конто и негови аналитики, "
-                "се зема синтетиката за да не се дуплираат износите."
+        if izbran_izvestaj == "🏠 Заклучен лист":
+            st.subheader("📑 Заклучен лист")
+            st.dataframe(
+                df_total.style.apply(style_total_row, axis=1),
+                use_container_width=True
             )
-            class_summary_rules = build_konto_class_summary(df, mode="rules")
-            class_summary_rules_display = class_summary_rules.copy()
-            for _col in class_summary_rules_display.columns:
+
+            st.subheader("✅ Контрола на заклучен лист")
+            zaklucen_kontrola = validate_zaklucen_list(df)
+            if not zaklucen_kontrola.empty:
+                st.dataframe(zaklucen_kontrola, use_container_width=True)
+                open_diffs = zaklucen_kontrola[zaklucen_kontrola["Razlika"] != 0]
+                if open_diffs.empty:
+                    st.success("Заклучниот лист е затворен ✅ Должи = Побарува")
+                else:
+                    for _, kontrola_row in open_diffs.iterrows():
+                        st.error(
+                            f'{kontrola_row["Kontrola"]}: разлика {kontrola_row["Razlika"]:,.0f}'
+                        )
+
+            st.subheader("🧮 Збир по класи од заклучниот лист")
+            class_summary = build_konto_class_summary(df, mode="raw")
+            class_summary_display = class_summary.copy()
+            for _col in class_summary_display.columns:
                 if _col not in ["Класа", "Назив", "Број на редови"]:
-                    class_summary_rules_display[_col] = class_summary_rules_display[_col].round(0).astype(int)
-            st.dataframe(class_summary_rules_display, use_container_width=True)
+                    class_summary_display.loc[:, _col] = class_summary_display[_col].round(0).astype(int)
+            st.dataframe(class_summary_display, use_container_width=True)
+
+            with st.expander("🔎 Збир по класи за правила - без дуплирање синтетика/аналитика", expanded=False):
+                st.caption(
+                    "Оваа табела служи за проверка на правилата. Ако постои синтетичко конто и негови аналитики, "
+                    "се зема синтетиката за да не се дуплираат износите."
+                )
+                class_summary_rules = build_konto_class_summary(df, mode="rules")
+                class_summary_rules_display = class_summary_rules.copy()
+                for _col in class_summary_rules_display.columns:
+                    if _col not in ["Класа", "Назив", "Број на редови"]:
+                        class_summary_rules_display.loc[:, _col] = class_summary_rules_display[_col].round(0).astype(int)
+                st.dataframe(class_summary_rules_display, use_container_width=True)
 
         bu = calculate_bilans_uspeh(df, pravila_file)
         bs = calculate_bilans_sostojba(df, pravila_file, bu)
 
-        if ima_zbirno_019(df) and not ima_analitika_019(df):
+        if izbran_izvestaj == "🏠 Заклучен лист" and ima_zbirno_019(df) and not ima_analitika_019(df):
             st.warning(
                 "⚠️ Детектирано е збирно конто 019 без аналитика 0191/0192/0193. "
                 "Исправката на вредност 019 е распределена пропорционално по материјални средства со бруто вредност > 0."
@@ -4850,46 +4898,47 @@ if zaklucen_file :
         pasiva_prev = bs.loc[bs["AOP"] == "111", "Prethodna godina"].sum()
         razlika_prev = aktiva_prev - pasiva_prev
 
-        st.subheader("✅ Kontrolni proverki na Bilans na sostojba")
-        if razlika == 0:
-            st.success(f"Tekovna godina: Aktiva = Pasiva ✅ ({aktiva:,.0f})")
-        else:
-            st.error(f"Tekovna godina: Razlika ❌ {razlika:,.0f}")
-        if razlika_prev == 0:
-            st.success(f"Prethodna godina: Aktiva = Pasiva ✅ ({aktiva_prev:,.0f})")
-        else:
-            st.error(f"Prethodna godina: Razlika ❌ {razlika_prev:,.0f}")
-
-        st.subheader("🔎 Дијагностика: класи ↔ BU/BS")
-        bs_diagnostic = build_bs_class_diagnostic(df, bu, bs)
-        bs_diagnostic_display = bs_diagnostic.copy()
-        for _col in ["Износ 1", "Износ 2", "Разлика"]:
-            if _col in bs_diagnostic_display.columns:
-                bs_diagnostic_display[_col] = bs_diagnostic_display[_col].round(0).astype(int)
-        st.dataframe(bs_diagnostic_display, use_container_width=True)
-
-        with st.expander("🔎 Дијагностика на трансфер BU/BS - кои конта влегуваат во секој AOP", expanded=False):
-            st.caption(
-                "Ова е техничка трага на правилата. Ако AOP е 0, тука веднаш се гледа дали правилото не пронашло конта, "
-                "дали е погрешна колоната или дали постои дуплирање синтетика/аналитика."
-            )
-            bu_rule_trace = build_rule_trace(df, pravila_file, "Pravila Bilans Uspeh")
-            st.markdown("**БУ - правила за трансфер**")
-            if not bu_rule_trace.empty and "Износ" in bu_rule_trace.columns:
-                bu_rule_trace_display = bu_rule_trace.copy()
-                bu_rule_trace_display["Износ"] = bu_rule_trace_display["Износ"].round(0).astype(int)
-                st.dataframe(bu_rule_trace_display, use_container_width=True)
+        if izbran_izvestaj == "🏠 Заклучен лист":
+            st.subheader("✅ Контролни проверки на Биланс на состојба")
+            if razlika == 0:
+                st.success(f"Tekovna godina: Aktiva = Pasiva ✅ ({aktiva:,.0f})")
             else:
-                st.dataframe(bu_rule_trace, use_container_width=True)
-
-            bs_rule_trace = build_rule_trace(df, pravila_file, "Pravila bilans Sostojba", year_mode="current")
-            st.markdown("**БС - правила за трансфер / тековна година**")
-            if not bs_rule_trace.empty and "Износ" in bs_rule_trace.columns:
-                bs_rule_trace_display = bs_rule_trace.copy()
-                bs_rule_trace_display["Износ"] = bs_rule_trace_display["Износ"].round(0).astype(int)
-                st.dataframe(bs_rule_trace_display, use_container_width=True)
+                st.error(f"Tekovna godina: Razlika ❌ {razlika:,.0f}")
+            if razlika_prev == 0:
+                st.success(f"Prethodna godina: Aktiva = Pasiva ✅ ({aktiva_prev:,.0f})")
             else:
-                st.dataframe(bs_rule_trace, use_container_width=True)
+                st.error(f"Prethodna godina: Razlika ❌ {razlika_prev:,.0f}")
+
+            st.subheader("🔎 Дијагностика: класи ↔ BU/BS")
+            bs_diagnostic = build_bs_class_diagnostic(df, bu, bs)
+            bs_diagnostic_display = bs_diagnostic.copy()
+            for _col in ["Износ 1", "Износ 2", "Разлика"]:
+                if _col in bs_diagnostic_display.columns:
+                    bs_diagnostic_display[_col] = bs_diagnostic_display[_col].round(0).astype(int)
+            st.dataframe(bs_diagnostic_display, use_container_width=True)
+
+            with st.expander("🔎 Дијагностика на трансфер BU/BS - кои конта влегуваат во секој AOP", expanded=False):
+                st.caption(
+                    "Ова е техничка трага на правилата. Ако AOP е 0, тука веднаш се гледа дали правилото не пронашло конта, "
+                    "дали е погрешна колоната или дали постои дуплирање синтетика/аналитика."
+                )
+                bu_rule_trace = build_rule_trace(df, pravila_file, "Pravila Bilans Uspeh")
+                st.markdown("**БУ - правила за трансфер**")
+                if not bu_rule_trace.empty and "Износ" in bu_rule_trace.columns:
+                    bu_rule_trace_display = bu_rule_trace.copy()
+                    bu_rule_trace_display["Износ"] = bu_rule_trace_display["Износ"].round(0).astype(int)
+                    st.dataframe(bu_rule_trace_display, use_container_width=True)
+                else:
+                    st.dataframe(bu_rule_trace, use_container_width=True)
+
+                bs_rule_trace = build_rule_trace(df, pravila_file, "Pravila bilans Sostojba", year_mode="current")
+                st.markdown("**БС - правила за трансфер / тековна година**")
+                if not bs_rule_trace.empty and "Износ" in bs_rule_trace.columns:
+                    bs_rule_trace_display = bs_rule_trace.copy()
+                    bs_rule_trace_display["Износ"] = bs_rule_trace_display["Износ"].round(0).astype(int)
+                    st.dataframe(bs_rule_trace_display, use_container_width=True)
+                else:
+                    st.dataframe(bs_rule_trace, use_container_width=True)
 
         def premium_lock(module_name):
             #st.warning(f"Modulot '{module_name} е достапен само во PREMIUM верзија. За пристап, ве молиме контактирајте не на [email protected]")
@@ -4909,42 +4958,10 @@ if zaklucen_file :
             return demo    
             
         
-        st.sidebar.markdown('<div class="sigma-sidebar-section">Навигација</div>', unsafe_allow_html=True)
-
-        izbran_izvestaj = st.sidebar.radio(
-            "",
-            [
-                "🏠 Заклучен лист",
-                "📈 Биланс на успех",
-                "🏦 Биланс на состојба",
-                "💧 Cash Flow",
-                "📊 KPI Dashboard",
-                "🧾 Сеопфатна добивка",
-                "💎 Valuation Dashboard",
-                "📍 Break-even Analysis",
-                "📄 CFO Snapshot",
-                "📘 CFO Извештај"
-
-            ],
-            index=0,
-            key="izbran_izvestaj_sidebar",
-            label_visibility="collapsed"
-        )
-
-        st.sidebar.markdown(
-            """
-            <div class="sigma-sidebar-footer">
-                <b>PREMIUM модул</b><br>
-                Извештаи, KPI, Cash Flow и Valuation на едно место.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
         st.divider()
 
         if izbran_izvestaj == "🏠 Заклучен лист":
-            st.info("📑 Заклучниот лист и контролите се прикажани погоре.")
+            pass
 
         elif izbran_izvestaj == "📈 Биланс на успех":
             st.subheader("Bilans na uspeh po AOP")
