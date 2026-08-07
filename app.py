@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import html as html_lib
 import streamlit.components.v1 as components
 
-APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - RENDER KPI/BE FIX 07.08.2026"
+APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - RENDER STABILITY FIX 07.08.2026"
 
 
 def clean_number(x):
@@ -494,7 +494,7 @@ st.markdown("""
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 078/229-057   
             - 🏠 Адреса: ул. 121 3-1 Тетово
-            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
+            - 🌐 https://sigma-financial-reports.onrender.com
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
