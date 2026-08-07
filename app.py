@@ -491,7 +491,7 @@ st.markdown("""
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 078/229-057   
             - 🏠 Адреса: ул. 121 3-1 Тетово
-            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
+            - 🌐 https://sigma-financial-reports.onrender.com
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
