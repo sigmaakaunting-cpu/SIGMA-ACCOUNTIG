@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import html as html_lib
 import streamlit.components.v1 as components
 
-APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - RENDER STABILITY FIX 07.08.2026"
+APP_VERSION = "SIGMA FINANCIAL REPORTS - PDF SAFE ROUTING V2 - 07.08.2026"
 
 
 def clean_number(x):
@@ -1028,7 +1028,7 @@ def read_zaklucen_pdf_standard_lines(pdf):
     return normalize_dataframe_numbers(pd.DataFrame(rows))
 
 
-def read_zaklucen_pdf(file):
+def _read_zaklucen_pdf_legacy_unused(file):
     st.success("PDF uspešno učitan. Počnuvam so ekstrakcija na podatoci...")
 
     with pdfplumber.open(file) as pdf:
@@ -2425,53 +2425,201 @@ def _pdf_parser_score(df, priority=0):
     )
 
 
-def read_zaklucen_pdf(file):
+def _standard_pdf_from_page_texts(page_texts):
+    """STANDARD/ZONEL parser from text already extracted once per page."""
+    rows = []
+    number_pattern = _pdf_number_pattern()
+
+    for text in page_texts:
+        for line in (text or "").split("\n"):
+            line = line.strip()
+            nums = re.findall(number_pattern, line)
+            if not (len(nums) >= 8 or len(nums) == 6):
+                continue
+
+            first_num = re.search(number_pattern, line)
+            if not first_num:
+                continue
+
+            left_part = line[:first_num.start()].strip()
+            konto, naziv = extract_pdf_konto_naziv(left_part)
+            if not konto:
+                continue
+
+            if len(nums) >= 8:
+                vals = [pdf_number(x) for x in nums[:8]]
+                (
+                    prethodna_dolzi, prethodna_pobaruva,
+                    tekovna_dolzi, tekovna_pobaruva,
+                    vkupno_dolzi, vkupno_pobaruva,
+                    krajno_dolzi, krajno_pobaruva,
+                ) = vals
+            else:
+                prethodna_dolzi, prethodna_pobaruva = split_signed_saldo(nums[0])
+                tekovna_dolzi = pdf_number(nums[1])
+                tekovna_pobaruva = pdf_number(nums[2])
+                vkupno_dolzi = pdf_number(nums[3])
+                vkupno_pobaruva = pdf_number(nums[4])
+                krajno_dolzi, krajno_pobaruva = split_signed_saldo(nums[5])
+
+            rows.append({
+                "konto": konto,
+                "naziv": naziv,
+                "prethodna_dolzi": prethodna_dolzi,
+                "prethodna_pobaruva": prethodna_pobaruva,
+                "tekovna_dolzi": tekovna_dolzi,
+                "tekovna_pobaruva": tekovna_pobaruva,
+                "vkupno_dolzi": vkupno_dolzi,
+                "vkupno_pobaruva": vkupno_pobaruva,
+                "krajno_dolzi": krajno_dolzi,
+                "krajno_pobaruva": krajno_pobaruva,
+            })
+
+    return finalize_zaklucen_dataframe(pd.DataFrame(rows))
+
+
+def _pdf_safe_print(message):
+    """Render diagnostic marker; flush immediately so the last completed phase is visible."""
     try:
-        st.success("PDF успешно е вчитан. Се врши автоматско препознавање на структурата...")
+        print(f"[PDF SAFE V2] {message}", flush=True)
     except Exception:
         pass
 
-    with pdfplumber.open(file) as pdf:
-        text_all = "\n".join([p.extract_text() or "" for p in pdf.pages])
-        text_upper = text_all.upper()
-        candidates = []
 
-        parser_specs = [
-            ("STANDARD / ZONEL / line parser", read_zaklucen_pdf_standard_lines, 1, True),
-            ("X-position parser", read_zaklucen_pdf_words_format, 2, "ZAKLU" in text_upper and "SALDO" in text_upper),
-            ("CFMA / Info Biro", read_pdf_cfma_infobiro_format, 3, "BRUTO" in text_upper and "BILANS" in text_upper),
-            ("IVA SOFT / BBILANS", read_pdf_ivasoft_format, 4, "БРУТО" in text_upper or "BBILANS" in text_upper),
-        ]
+def read_zaklucen_pdf(file):
+    """
+    Render-safe PDF router.
 
-        for name, func, priority, enabled in parser_specs:
-            if not enabled:
-                continue
-            try:
-                df_candidate = finalize_zaklucen_dataframe(func(pdf))
-                if not df_candidate.empty and len(df_candidate) > 5:
-                    candidates.append({"name": name, "df": df_candidate, "priority": priority})
-            except Exception:
-                continue
+    Key rule: extract page text only ONCE. STANDARD/ZONEL is parsed from that
+    already-extracted text. Only when STANDARD is not reliable do we run ONE
+    positional fallback parser (X-position, CFMA or IVA), never all of them.
+    """
+    try:
+        st.success("PDF успешно е вчитан. Се врши безбедно препознавање на структурата...")
+    except Exception:
+        pass
 
-        if candidates:
-            best = sorted(candidates, key=lambda c: _pdf_parser_score(c["df"], c["priority"]), reverse=True)[0]
-            best_df = finalize_zaklucen_dataframe(best["df"])
-            try:
-                st.info(
-                    f"Детектиран PDF формат: {best['name']} "
-                    f"(редови: {len(best_df)}, контролна разлика: {_pdf_balance_diff(best_df):,.2f})."
-                )
-            except Exception:
-                pass
-            return best_df
+    # Keep independent bytes so any fallback can reopen the PDF from position 0.
+    try:
+        if hasattr(file, "getvalue"):
+            pdf_bytes = file.getvalue()
+        else:
+            pos = file.tell() if hasattr(file, "tell") else None
+            if hasattr(file, "seek"):
+                file.seek(0)
+            pdf_bytes = file.read()
+            if pos is not None and hasattr(file, "seek"):
+                file.seek(pos)
+    except Exception:
+        if hasattr(file, "seek"):
+            file.seek(0)
+        pdf_bytes = file.read()
 
+    _pdf_safe_print(f"START bytes={len(pdf_bytes):,}")
+
+    page_texts = []
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            _pdf_safe_print(f"OPEN OK pages={len(pdf.pages)}")
+            for page_no, page in enumerate(pdf.pages, start=1):
+                # One and only text extraction pass for routing + STANDARD parser.
+                text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
+                page_texts.append(text)
+                _pdf_safe_print(f"TEXT page={page_no} chars={len(text)}")
+    except Exception as e:
+        _pdf_safe_print(f"TEXT ERROR {type(e).__name__}: {e}")
+        try:
+            st.error(f"PDF не може да се прочита: {e}")
+            st.stop()
+        except Exception:
+            pass
+        return pd.DataFrame(columns=["konto", "naziv"] + REQUIRED_ZAKLUCEN_COLUMNS)
+
+    text_all = "\n".join(page_texts)
+    text_upper = text_all.upper()
+
+    # 1) Fast path: STANDARD/ZONEL from the same text already extracted above.
+    try:
+        df_standard = _standard_pdf_from_page_texts(page_texts)
+        m_standard = _parser_quality_metrics(df_standard)
+        _pdf_safe_print(
+            f"STANDARD rows={m_standard['rows']} diff={m_standard['diff']:.2f} "
+            f"rev={m_standard['has_revenue']} exp={m_standard['has_expense']}"
+        )
+    except Exception as e:
+        _pdf_safe_print(f"STANDARD ERROR {type(e).__name__}: {e}")
+        df_standard = pd.DataFrame(columns=["konto", "naziv"] + REQUIRED_ZAKLUCEN_COLUMNS)
+        m_standard = _parser_quality_metrics(df_standard)
+
+    # A balanced standard parse with enough rows is final. No extract_words pass.
+    if m_standard["rows"] > 5 and m_standard["diff"] <= 1.0:
+        _pdf_safe_print("ROUTE=STANDARD short-circuit; positional parsers skipped")
+        try:
+            st.info(
+                f"Детектиран PDF формат: STANDARD / ZONEL / line parser "
+                f"(редови: {len(df_standard)}, контролна разлика: {_pdf_balance_diff(df_standard):,.2f})."
+            )
+        except Exception:
+            pass
+        return finalize_zaklucen_dataframe(df_standard)
+
+    # 2) Choose at most ONE positional fallback based on document signature.
+    fallback_name = None
+    fallback_func = None
+
+    # IVA signature is the most specific; check before generic BRUTO BILANS.
+    if "БРУТОБИЛАНС" in text_upper or "BBILANS" in text_upper:
+        fallback_name = "IVA SOFT / BBILANS"
+        fallback_func = read_pdf_ivasoft_format
+    elif "BRUTO" in text_upper and "BILANS" in text_upper:
+        fallback_name = "CFMA / Info Biro"
+        fallback_func = read_pdf_cfma_infobiro_format
+    elif "ZAKLU" in text_upper and "SALDO" in text_upper and "TEKOV" in text_upper:
+        fallback_name = "X-position parser"
+        fallback_func = read_zaklucen_pdf_words_format
+
+    candidates = []
+    if m_standard["rows"] > 5:
+        candidates.append({"name": "STANDARD / ZONEL / line parser", "df": df_standard, "priority": 1})
+
+    if fallback_func is not None:
+        _pdf_safe_print(f"FALLBACK START {fallback_name}")
+        try:
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                df_fallback = finalize_zaklucen_dataframe(fallback_func(pdf))
+            m_fb = _parser_quality_metrics(df_fallback)
+            _pdf_safe_print(f"FALLBACK END {fallback_name} rows={m_fb['rows']} diff={m_fb['diff']:.2f}")
+            if m_fb["rows"] > 5:
+                candidates.append({"name": fallback_name, "df": df_fallback, "priority": 2})
+        except Exception as e:
+            _pdf_safe_print(f"FALLBACK ERROR {fallback_name}: {type(e).__name__}: {e}")
+    else:
+        _pdf_safe_print("FALLBACK=NONE by signature")
+
+    if candidates:
+        best = sorted(
+            candidates,
+            key=lambda c: _pdf_parser_score(c["df"], c["priority"]),
+            reverse=True,
+        )[0]
+        best_df = finalize_zaklucen_dataframe(best["df"])
+        _pdf_safe_print(f"ROUTE={best['name']} rows={len(best_df)} diff={_pdf_balance_diff(best_df):.2f}")
+        try:
+            st.info(
+                f"Детектиран PDF формат: {best['name']} "
+                f"(редови: {len(best_df)}, контролна разлика: {_pdf_balance_diff(best_df):,.2f})."
+            )
+        except Exception:
+            pass
+        return best_df
+
+    _pdf_safe_print("NO VALID PARSER RESULT")
     try:
         st.error("PDF е прочитан, но не се пронајдени валидни редови од заклучниот лист / бруто билансот.")
         st.stop()
     except Exception:
         pass
     return pd.DataFrame(columns=["konto", "naziv"] + REQUIRED_ZAKLUCEN_COLUMNS)
-
 
 def read_zaklucen(file):
     engine = "xlrd" if file.name.lower().endswith(".xls") else "openpyxl"
