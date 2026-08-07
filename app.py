@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import html as html_lib
 import streamlit.components.v1 as components
 
-APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - 02.07.2026"
+APP_VERSION = "SIGMA FINANCIAL REPORTS STABLE - RENDER KPI/BE FIX 07.08.2026"
 
 
 def clean_number(x):
@@ -79,6 +79,9 @@ def normalize_dataframe_numbers(df):
     Оваа функција ги чисти сите колони што личат на износи.
     Не ги допира колони како конто, опис, назив, АОП.
     """
+    # Работиме на независна копија за да избегнеме pandas chained-assignment
+    # warnings и идни Copy-on-Write несогласувања.
+    df = df.copy()
 
     skip_words = [
         "konto", "конто",
@@ -95,7 +98,7 @@ def normalize_dataframe_numbers(df):
         if any(word in col_lower for word in skip_words):
             continue
 
-        df[col] = df[col].apply(clean_number)
+        df.loc[:, col] = df[col].apply(clean_number)
 
     return df
 
@@ -491,7 +494,7 @@ st.markdown("""
             - 📧 Email:sigmaakaunting@gmail.com
             - 📞 Телефон: 078/229-057   
             - 🏠 Адреса: ул. 121 3-1 Тетово
-            - 🌐 https://sigma-financial-reports.onrender.com
+            - 🌐 https://sigma-accountig-xfvzdwja9fhimefvybgzbh.streamlit.app
             🌏 SIGMA Accounting 
 <style>
 [data-testid="metric-container"] {
@@ -1162,7 +1165,10 @@ def find_header_row(file, sheet_name):
     raise ValueError(f"Ne ja najdov kolonata AOP vo sheet: {sheet_name}")
 
 
+@st.cache_data(show_spinner=False, max_entries=32)
 def read_rules(file, sheet_name):
+    # Правилата се статични во рамки на deploy; нема потреба повторно да се
+    # чита Excel sheet при секој Streamlit rerun.
     header_row = find_header_row(file, sheet_name)
     rules = pd.read_excel(file, sheet_name=sheet_name, header=header_row)
     rules.columns = [str(c).strip() for c in rules.columns]
@@ -4085,6 +4091,7 @@ def build_rule_trace(df, rules_file, sheet_name, year_mode="current"):
 # END SIGMA v9 FIXES
 # =====================================================
 
+@st.cache_data(show_spinner=False, max_entries=3)
 def load_zaklucen_cached(file_name, file_bytes):
     """
     Го чита заклучниот лист само еднаш за ист uploaded фајл.
@@ -4514,7 +4521,7 @@ if zaklucen_file :
         df_total = pd.concat([df, pd.DataFrame([sum_row])], ignore_index=True)
         for col in df_total.columns:
             if col not in ["konto", "naziv"]:
-                df_total[col] = df_total[col].round(0).astype(int)
+                df_total.loc[:, col] = df_total[col].round(0).astype(int)
 
         def style_total_row(row):
             if row["naziv"] == "VKUPNO":
@@ -4542,7 +4549,7 @@ if zaklucen_file :
         class_summary_display = class_summary.copy()
         for _col in class_summary_display.columns:
             if _col not in ["Класа", "Назив", "Број на редови"]:
-                class_summary_display[_col] = class_summary_display[_col].round(0).astype(int)
+                class_summary_display.loc[:, _col] = class_summary_display[_col].round(0).astype(int)
         st.dataframe(class_summary_display, use_container_width=True)
 
         with st.expander("🔎 Збир по класи за правила - без дуплирање синтетика/аналитика", expanded=False):
@@ -4640,28 +4647,44 @@ if zaklucen_file :
             st.warning(f"Cash Flow ne e vcitan: {cash_error}")
 
         with st.sidebar.expander("⚙️ KPI параметри", expanded=False):
-            broj_vraboteni = st.number_input(
-                "Број на вработени",
-                min_value=0,
-                value=0,
-                step=1,
-                key="broj_vraboteni_kpi"
-            )
+            with st.form("kpi_params_form", clear_on_submit=False):
+                broj_vraboteni = st.number_input(
+                    "Број на вработени",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    key="broj_vraboteni_kpi"
+                )
 
-            meseci_rabotenje = st.number_input(
-                "Месеци на работење",
-                min_value=0,
-                max_value=12,
-                value=12,
-                step=1,
-                key="meseci_rabotenje_kpi"
-            )
+                meseci_rabotenje = st.number_input(
+                    "Месеци на работење",
+                    min_value=0,
+                    max_value=12,
+                    value=12,
+                    step=1,
+                    key="meseci_rabotenje_kpi"
+                )
 
-        bu.loc[bu["AOP"] == "257", "Iznos"] = broj_vraboteni
-        bu.loc[bu["AOP"] == "258", "Iznos"] = meseci_rabotenje
+                st.form_submit_button(
+                    "✅ Примени KPI параметри",
+                    use_container_width=True
+                )
+            st.caption("Промените се пресметуваат само по клик на Примени.")
+
+        # Не го менуваме оригиналниот BU што го користат останатите извештаи.
+        # KPI добива посебна копија со оперативните параметри.
+        bu_kpi = bu.copy()
+        bu_kpi.loc[bu_kpi["AOP"] == "257", "Iznos"] = broj_vraboteni
+        bu_kpi.loc[bu_kpi["AOP"] == "258", "Iznos"] = meseci_rabotenje
 
         try:
-            kpi = calculate_kpi(pravila_file, bu, bs   )
+            kpi = calculate_kpi(
+                pravila_file,
+                bu_kpi,
+                bs,
+                broj_vraboteni=broj_vraboteni,
+                meseci_rabotenje=meseci_rabotenje
+            )
         except Exception as kpi_error:
             kpi = None
             st.warning(f"KPI ne e vcitan: {kpi_error}")
@@ -4894,45 +4917,63 @@ if zaklucen_file :
             st.subheader("📍 Break-even Analysis")
 
             with st.sidebar.expander("⚙️ Break-even параметри", expanded=False):
-                sales_aop_input = st.text_input(
-                    "AOP за приходи од продажба",
-                    value="202"
-                )
+                with st.form("break_even_params_form", clear_on_submit=False):
+                    sales_aop_input = st.text_input(
+                        "AOP за приходи од продажба",
+                        value="202",
+                        key="be_sales_aop"
+                    )
 
-                months_in_period = st.number_input(
-                    "Број на месеци во извештајот",
-                    min_value=1,
-                    max_value=12,
-                    value=12,
-                    step=1
-                )
+                    months_in_period = st.number_input(
+                        "Број на месеци во извештајот",
+                        min_value=1,
+                        max_value=12,
+                        value=12,
+                        step=1,
+                        key="be_months"
+                    )
 
-                pct_402 = st.slider(
-                    "Варијабилен дел од 402 - струја (%)",
-                    0,
-                    100,
-                    70,
-                )
+                    pct_402 = st.slider(
+                        "Варијабилен дел од 402 - струја (%)",
+                        0,
+                        100,
+                        70,
+                        key="be_pct_402"
+                    )
 
-                pct_403 = st.slider(
-                    "Варијабилен дел од 403 - енергија (%)",
-                    0,
-                    100,
-                    70,
-                )
+                    pct_403 = st.slider(
+                        "Варијабилен дел од 403 - енергија (%)",
+                        0,
+                        100,
+                        70,
+                        key="be_pct_403"
+                    )
 
-                include_701 = st.checkbox(
-                    "Вклучи 701 - набавна вредност на продадени стоки",
-                    value=True,
-                    help="За трговски фирми 701 најчесто е варијабилен трошок и треба да влезе во break-even пресметката."
-                )
+                    include_701 = st.checkbox(
+                        "Вклучи 701 - набавна вредност на продадени стоки",
+                        value=True,
+                        key="be_include_701",
+                        help="За трговски фирми 701 најчесто е варијабилен трошок и треба да влезе во break-even пресметката."
+                    )
 
-                pct_701 = st.slider(
-                    "Варијабилен дел од 701 - набавна вредност (%)",
-                    0,
-                    100,
-                    100,
-                ) if include_701 else 0
+                    # Slider-от е секогаш видлив; ако 701 е исклучено, вредноста
+                    # едноставно не се користи. Така формата не бара дополнителен rerun.
+                    pct_701_input = st.slider(
+                        "Варијабилен дел од 701 - набавна вредност (%)",
+                        0,
+                        100,
+                        100,
+                        key="be_pct_701"
+                    )
+
+                    st.form_submit_button(
+                        "✅ Примени Break-even параметри",
+                        use_container_width=True
+                    )
+
+                st.caption("Промените се пресметуваат само по клик на Примени.")
+
+            pct_701 = pct_701_input if include_701 else 0
 
             sales_aops = [
                 x.strip()
