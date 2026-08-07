@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import html as html_lib
 import streamlit.components.v1 as components
 
-APP_VERSION = "SIGMA FINANCIAL REPORTS - PDF SAFE V2 + REPORT VIEW - 07.08.2026"
+APP_VERSION = "SIGMA FINANCIAL REPORTS - CLEAN NAV + CONTEXT PARAMS - 07.08.2026"
 
 
 def clean_number(x):
@@ -481,6 +481,23 @@ Premium модулите се активни.
             "🔒 TRIAL периодот е истечен"
         )
 
+# =====================================================
+# ANALYSIS PARAMETERS - STORED VALUES
+# UI controls are rendered contextually inside KPI / Break-even / CFO reports,
+# so the sidebar remains clean and report navigation stays immediately visible.
+# =====================================================
+analiza_meseci = int(st.session_state.get("analysis_months_shared", 12) or 12)
+broj_vraboteni = int(st.session_state.get("broj_vraboteni_kpi", 0) or 0)
+meseci_rabotenje = int(analiza_meseci)
+months_in_period = int(analiza_meseci)
+
+sales_aop_input = str(st.session_state.get("be_sales_aop", "202") or "202")
+pct_402 = int(st.session_state.get("be_pct_402", 70) or 70)
+pct_403 = int(st.session_state.get("be_pct_403", 70) or 70)
+include_701 = bool(st.session_state.get("be_include_701", True))
+pct_701_input = int(st.session_state.get("be_pct_701", 100) or 100)
+pct_701 = pct_701_input if include_701 else 0
+
 if os.path.exists("assets/sigma_logo.png"):
     logo = Image.open("assets/sigma_logo.png")
 else:
@@ -547,7 +564,7 @@ if zaklucen_file is not None:
         unsafe_allow_html=True
     )
     izbran_izvestaj = st.sidebar.radio(
-        "",
+        "Извештаи",
         REPORT_OPTIONS,
         index=0,
         key="izbran_izvestaj_sidebar",
@@ -4699,6 +4716,115 @@ def build_cfo_report_html(company_name, period_label, sections_html):
 
 
 if zaklucen_file :
+    # =====================================================
+    # CONTEXTUAL ANALYSIS PARAMETERS
+    # Sidebar = navigation only. Parameters appear at the top of reports that use them.
+    # =====================================================
+    _reports_with_core_params = {
+        "📊 KPI Dashboard",
+        "📍 Break-even Analysis",
+        "📄 CFO Snapshot",
+        "📘 CFO Извештај",
+    }
+
+    if izbran_izvestaj in _reports_with_core_params:
+        st.markdown("### ⚙️ Клучни параметри за анализата")
+        st.warning(
+            "⚠️ Провери ги параметрите пред анализа. Точниот број на месеци и вработени "
+            "директно влијае на повеќе KPI, просечни и CFO пресметки."
+        )
+
+        with st.form("critical_analysis_params_form", clear_on_submit=False):
+            _pc1, _pc2 = st.columns(2)
+            with _pc1:
+                analiza_meseci = st.number_input(
+                    "📅 Број на месеци во анализираниот период",
+                    min_value=1,
+                    max_value=12,
+                    value=int(st.session_state.get("analysis_months_shared", 12) or 12),
+                    step=1,
+                    key="analysis_months_shared"
+                )
+            with _pc2:
+                broj_vraboteni = st.number_input(
+                    "👥 Број на вработени",
+                    min_value=0,
+                    value=int(st.session_state.get("broj_vraboteni_kpi", 0) or 0),
+                    step=1,
+                    key="broj_vraboteni_kpi"
+                )
+
+            st.form_submit_button(
+                "✅ Примени клучни параметри",
+                use_container_width=True
+            )
+
+        meseci_rabotenje = int(analiza_meseci)
+        months_in_period = int(analiza_meseci)
+
+        _param_status = f"Тековно: {months_in_period} мес. • {int(broj_vraboteni)} вработени"
+        if int(broj_vraboteni) <= 0:
+            st.error(
+                f"❗ {_param_status}. Внеси точен број на вработени за KPI по вработен да биде реален."
+            )
+        else:
+            st.success(f"✅ {_param_status}")
+
+        if izbran_izvestaj == "📍 Break-even Analysis":
+            with st.expander("📍 Детални Break-even параметри", expanded=True):
+                st.caption("Поставките подолу влијаат само на Break-even пресметката.")
+                with st.form("break_even_params_form", clear_on_submit=False):
+                    sales_aop_input = st.text_input(
+                        "AOP за приходи од продажба",
+                        value=str(st.session_state.get("be_sales_aop", "202") or "202"),
+                        key="be_sales_aop"
+                    )
+
+                    _be1, _be2 = st.columns(2)
+                    with _be1:
+                        pct_402 = st.slider(
+                            "Варијабилен дел од 402 - струја (%)",
+                            0, 100,
+                            int(st.session_state.get("be_pct_402", 70) or 70),
+                            key="be_pct_402"
+                        )
+                    with _be2:
+                        pct_403 = st.slider(
+                            "Варијабилен дел од 403 - енергија (%)",
+                            0, 100,
+                            int(st.session_state.get("be_pct_403", 70) or 70),
+                            key="be_pct_403"
+                        )
+
+                    include_701 = st.checkbox(
+                        "Вклучи 701 - набавна вредност на продадени стоки",
+                        value=bool(st.session_state.get("be_include_701", True)),
+                        key="be_include_701",
+                        help="За трговски фирми 701 најчесто е варијабилен трошок."
+                    )
+
+                    pct_701_input = st.slider(
+                        "Варијабилен дел од 701 - набавна вредност (%)",
+                        0, 100,
+                        int(st.session_state.get("be_pct_701", 100) or 100),
+                        key="be_pct_701"
+                    )
+
+                    st.form_submit_button(
+                        "✅ Примени Break-even параметри",
+                        use_container_width=True
+                    )
+
+                pct_701 = pct_701_input if include_701 else 0
+
+        elif izbran_izvestaj in {"📄 CFO Snapshot", "📘 CFO Извештај"}:
+            st.caption(
+                "ℹ️ CFO извештаите ги користат тековните KPI параметри. "
+                "Деталните Break-even поставки се менуваат во „Break-even Analysis“."
+            )
+
+        st.divider()
+
     try:
         # FINALNA SIGURNOST + SPEED:
         # PDF/Excel се чита само еднаш за истиот upload фајл.
@@ -4842,30 +4968,7 @@ if zaklucen_file :
             cf = None
             st.warning(f"Cash Flow ne e vcitan: {cash_error}")
 
-        with st.sidebar.expander("⚙️ KPI параметри", expanded=False):
-            with st.form("kpi_params_form", clear_on_submit=False):
-                broj_vraboteni = st.number_input(
-                    "Број на вработени",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    key="broj_vraboteni_kpi"
-                )
-
-                meseci_rabotenje = st.number_input(
-                    "Месеци на работење",
-                    min_value=0,
-                    max_value=12,
-                    value=12,
-                    step=1,
-                    key="meseci_rabotenje_kpi"
-                )
-
-                st.form_submit_button(
-                    "✅ Примени KPI параметри",
-                    use_container_width=True
-                )
-            st.caption("Промените се пресметуваат само по клик на Примени.")
+        # KPI клучните параметри се внесуваат на врвот на релевантниот извештај.
 
         # Не го менуваме оригиналниот BU што го користат останатите извештаи.
         # KPI добива посебна копија со оперативните параметри.
@@ -5081,64 +5184,7 @@ if zaklucen_file :
         elif izbran_izvestaj == "📍 Break-even Analysis":
             st.subheader("📍 Break-even Analysis")
 
-            with st.sidebar.expander("⚙️ Break-even параметри", expanded=False):
-                with st.form("break_even_params_form", clear_on_submit=False):
-                    sales_aop_input = st.text_input(
-                        "AOP за приходи од продажба",
-                        value="202",
-                        key="be_sales_aop"
-                    )
-
-                    months_in_period = st.number_input(
-                        "Број на месеци во извештајот",
-                        min_value=1,
-                        max_value=12,
-                        value=12,
-                        step=1,
-                        key="be_months"
-                    )
-
-                    pct_402 = st.slider(
-                        "Варијабилен дел од 402 - струја (%)",
-                        0,
-                        100,
-                        70,
-                        key="be_pct_402"
-                    )
-
-                    pct_403 = st.slider(
-                        "Варијабилен дел од 403 - енергија (%)",
-                        0,
-                        100,
-                        70,
-                        key="be_pct_403"
-                    )
-
-                    include_701 = st.checkbox(
-                        "Вклучи 701 - набавна вредност на продадени стоки",
-                        value=True,
-                        key="be_include_701",
-                        help="За трговски фирми 701 најчесто е варијабилен трошок и треба да влезе во break-even пресметката."
-                    )
-
-                    # Slider-от е секогаш видлив; ако 701 е исклучено, вредноста
-                    # едноставно не се користи. Така формата не бара дополнителен rerun.
-                    pct_701_input = st.slider(
-                        "Варијабилен дел од 701 - набавна вредност (%)",
-                        0,
-                        100,
-                        100,
-                        key="be_pct_701"
-                    )
-
-                    st.form_submit_button(
-                        "✅ Примени Break-even параметри",
-                        use_container_width=True
-                    )
-
-                st.caption("Промените се пресметуваат само по клик на Примени.")
-
-            pct_701 = pct_701_input if include_701 else 0
+            # Break-even параметрите се внесуваат на врвот на Break-even извештајот.
 
             sales_aops = [
                 x.strip()
